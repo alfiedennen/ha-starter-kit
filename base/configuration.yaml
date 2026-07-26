@@ -1,0 +1,40 @@
+# ============================================================================
+# Base configuration.yaml for the ha-starter-kit
+# ============================================================================
+# Copy this into your Home Assistant /config directory (or merge the keys
+# into your existing configuration.yaml), then drop any component's package
+# file into /config/packages/ and restart. Each component in this kit is a
+# self-contained "package" — helpers, automations, scripts and template
+# sensors travel together in one file, so installing a component is:
+#
+#   1. copy  components/NN-name/package/<name>.yaml  →  /config/packages/
+#   2. rename the placeholder entity ids listed in that component's README
+#   3. add any `!secret` keys it needs to /config/secrets.yaml
+#   4. restart Home Assistant (or reload YAML from Developer Tools)
+#
+# ============================================================================
+
+# Loads the sane defaults every HA install wants (history, mobile_app,
+# automation/script/scene engines, energy, my, etc.)
+default_config:
+
+homeassistant:
+  # THE key line of this kit: every YAML file in /config/packages is loaded
+  # as a self-contained bundle of config. This is what makes components
+  # drop-in instead of "paste these 6 blocks into 6 different files".
+  packages: !include_dir_named packages
+
+frontend:
+  # Any theme YAML dropped into /config/themes becomes selectable in your
+  # user profile. See components/13-theme.
+  themes: !include_dir_merge_named themes
+
+# Automations you create in the UI land here (keep the stub file existing,
+# even if empty — HA writes to it). Package automations live in packages/.
+automation ui: !include automations.yaml
+
+# Scenes created in the UI (see components/06-scenes for starter scenes).
+scene: !include scenes.yaml
+
+# Scripts created in the UI. Package scripts live inside their package file.
+script ui: !include scripts.yaml

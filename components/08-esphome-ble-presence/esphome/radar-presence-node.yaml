@@ -1,0 +1,168 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Radar presence node — Seeed XIAO ESP32-S3 + HLK-LD2450 24 GHz mmWave radar
+#
+# Everything the BLE proxy node does, PLUS millimetre-wave radar that tracks
+# up to 3 people with X/Y coordinates, distance and speed at 10 Hz. Radar
+# catches a person sitting perfectly still (something PIR never will) and
+# gives you positional data you can build zone automations on.
+#
+# READ THE WIRING SECTION IN THE README BEFORE POWERING UP. The radar's
+# pre-made cable uses non-standard wire colours and wiring it "the obvious
+# way" leaves the radar dead-looking (details in the README gotchas).
+# ─────────────────────────────────────────────────────────────────────────────
+
+substitutions:
+  # Lowercase, hyphenated, unique per board — becomes the hostname + entity prefix.
+  name: presence-living-room
+  # Human name shown in Home Assistant — include the room.
+  friendly_name: "Presence — Living Room"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: false
+  min_version: 2024.11.0
+
+esp32:
+  board: seeed_xiao_esp32s3
+  framework:
+    type: arduino
+
+# LD2450 component: TillFleisch/ESPHome-HLK-LD2450 (external, from GitHub).
+# Why not ESPHome's built-in `ld2450`: on some ESPHome releases the built-in
+# component reads the radar's firmware version and MAC and even publishes
+# target_count, but MIS-PARSES the target frames themselves — the per-target
+# coordinates never publish, even though a raw UART dump shows the radar
+# streaming valid multi-target frames the whole time. The TillFleisch
+# component parses them correctly and is actively maintained. (The older
+# screek-workshop fork you may find in tutorials has been deleted from
+# GitHub — don't chase it.)
+external_components:
+  - source:
+      type: git
+      url: https://github.com/TillFleisch/ESPHome-HLK-LD2450
+      ref: main  # pin to a release tag instead if you want reproducible builds
+    components: [LD2450]
+
+logger:
+  level: INFO  # bump to DEBUG while commissioning the radar — it logs frame parsing
+  # The S3's native USB port carries the logs, keeping every GPIO free for
+  # the radar UART. Without this line, logging tries to claim a hardware UART.
+  hardware_uart: USB_SERIAL_JTAG
+
+api:
+  encryption:
+    key: !secret presence_node_api_key
+
+ota:
+  - platform: esphome
+    password: !secret presence_node_ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Fallback hotspot for rescuing a board that can't join WiFi.
+  ap:
+    ssid: "${name}"
+    password: !secret presence_node_ota_password
+
+captive_portal:
+
+esp32_ble_tracker:
+  scan_parameters:
+    # interval == window = radio listens 100% of the time; best for presence.
+    interval: 1100ms
+    window: 1100ms
+    active: true
+
+bluetooth_proxy:
+  active: true
+
+# ── Radar UART ──────────────────────────────────────────────────────────────
+# XIAO ESP32-S3 pin map:  radar TX → D9/GPIO8 (ESP RX) ; radar RX → D8/GPIO7
+# (ESP TX). Power the radar from the XIAO's 5V pin (USB VBUS) — the 3.3V rail
+# cannot supply the radar's ~200 mA. Keep wires under 15 cm: longer runs at
+# 256000 baud start dropping frames.
+uart:
+  id: ld2450_uart
+  tx_pin: GPIO7
+  rx_pin:
+    number: GPIO8
+    mode:
+      input: true
+      pullup: true
+  baud_rate: 256000  # fixed by the radar firmware — do not "try 115200"
+  parity: NONE
+  stop_bits: 1
+  data_bits: 8
+
+LD2450:
+  uart_id: ld2450_uart
+  # Set true if you mount the module upside-down or want to mirror left/right
+  # so the X axis matches your floor plan.
+  flip_x_axis: false
+  # Drops targets faster when they leave the detection area — snappier
+  # lights-off behaviour at the cost of slightly more flicker on the margins.
+  fast_off_detection: true
+  max_detection_distance:
+    name: "Radar Max Distance"
+    # 6 m is the radar's spec limit; real-world useful range is ~4-5 m.
+    # Exposed as a number entity so you can pull it in from HA to stop the
+    # radar seeing through a wall into the next room.
+    initial_value: 6m
+  tracking_mode_switch:
+    name: "Radar Multi-Target Tracking"
+  restart_button:
+    name: "Radar Restart"
+  occupancy:
+    # The simple binary "somebody is in this room" — what most automations want.
+    name: "Radar Presence"
+  target_count:
+    name: "Radar Target Count"
+  # Per-target coordinates: mm from the module, +Y straight out of the
+  # antenna face into the room. Feed these to template sensors / zone logic
+  # in HA ("is someone at the desk?", "on the sofa?").
+  targets:
+    - target:
+        name: "Target 1"
+        id: t1
+        x_position: { name: "Target 1 X" }
+        y_position: { name: "Target 1 Y" }
+        speed: { name: "Target 1 Speed" }
+        distance: { name: "Target 1 Distance" }
+    - target:
+        name: "Target 2"
+        id: t2
+        x_position: { name: "Target 2 X" }
+        y_position: { name: "Target 2 Y" }
+        speed: { name: "Target 2 Speed" }
+        distance: { name: "Target 2 Distance" }
+    - target:
+        name: "Target 3"
+        id: t3
+        x_position: { name: "Target 3 X" }
+        y_position: { name: "Target 3 Y" }
+        speed: { name: "Target 3 Speed" }
+        distance: { name: "Target 3 Distance" }
+
+sensor:
+  # Diagnostics — see ble-proxy-node.yaml for why these earn their keep.
+  - platform: uptime
+    name: "Uptime"
+    update_interval: 60s
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+
+  # ── OPTIONAL: direct per-beacon RSSI (same block as ble-proxy-node.yaml) ──
+  # Not needed for normal phone/watch tracking — the bluetooth_proxy already
+  # feeds Private BLE Device and Bermuda. Uncomment only for raw-dBm work.
+  #
+  # - platform: ble_rssi
+  #   ibeacon_uuid: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"  # your beacon's UUID
+  #   name: "Phone RSSI"
+  #   filters:
+  #     - heartbeat: 2s
+  #     - timeout:
+  #         timeout: 15s
+  #         value: -127

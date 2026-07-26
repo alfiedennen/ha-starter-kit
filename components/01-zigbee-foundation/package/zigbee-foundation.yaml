@@ -1,0 +1,128 @@
+# ════════════════════════════════════════════════════════════════════════
+# 01 — Zigbee foundation: permit-join discipline
+# ════════════════════════════════════════════════════════════════════════
+# The network stays CLOSED by default (permit_join: false in the Z2M
+# add-on config). This package gives you a single "pairing mode" toggle
+# that opens it deliberately, keeps it open while you're pairing (Z2M
+# hard-caps any single permit-join request at 254 seconds, so it must be
+# re-armed), closes it again on toggle-off, and force-closes after 15
+# minutes in case you wander off. It also notifies when a device
+# completes its interview — your cue to rename it BEFORE building
+# anything on it.
+#
+# Assumes the default Z2M base topic "zigbee2mqtt". If you changed it,
+# search-and-replace the topic in this file.
+# Notifications go to notify.notify (HA's default notifier — routes to
+# the Companion app if you have it). Swap for your own notify service.
+
+input_boolean:
+  zigbee_permit_join:
+    name: Zigbee pairing mode
+    icon: mdi:zigbee
+
+automation:
+  # ── Open the network when the toggle goes on ──────────────────────────
+  - id: zigbee_permit_join_on
+    alias: "Zigbee: pairing mode on"
+    description: >-
+      Opens the network for joining when the pairing toggle is switched on.
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.zigbee_permit_join
+        to: "on"
+    actions:
+      - action: mqtt.publish
+        data:
+          topic: "zigbee2mqtt/bridge/request/permit_join"
+          # 254s is the maximum Z2M accepts for a single request —
+          # the keep-alive below re-arms it while the toggle stays on.
+          payload: '{"value": true, "time": 254}'
+    mode: single
+
+  # ── Keep it open while the toggle stays on ────────────────────────────
+  # Sleepy battery devices (TRVs, contact sensors) can take several
+  # minutes of button-pressing to wake and join; without this re-arm the
+  # 254s window silently closes mid-pairing and you're left wondering why
+  # the device won't show up.
+  - id: zigbee_permit_join_keepalive
+    alias: "Zigbee: pairing mode keep-alive"
+    triggers:
+      - trigger: time_pattern
+        minutes: "/4"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.zigbee_permit_join
+        state: "on"
+    actions:
+      - action: mqtt.publish
+        data:
+          topic: "zigbee2mqtt/bridge/request/permit_join"
+          payload: '{"value": true, "time": 254}'
+    mode: single
+
+  # ── Close the network when the toggle goes off ────────────────────────
+  - id: zigbee_permit_join_off
+    alias: "Zigbee: pairing mode off"
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.zigbee_permit_join
+        to: "off"
+    actions:
+      - action: mqtt.publish
+        data:
+          topic: "zigbee2mqtt/bridge/request/permit_join"
+          payload: '{"value": false}'
+    mode: single
+
+  # ── Safety net: auto-close after 15 minutes ───────────────────────────
+  # An open Zigbee network accepts ANY join request — including a
+  # neighbour's mis-pairing devices, and (paranoia tier) hostile joins.
+  # 15 minutes is comfortably enough for a whole batch of bulbs; if a
+  # stubborn sleepy device needs longer, just toggle again.
+  - id: zigbee_permit_join_auto_off
+    alias: "Zigbee: pairing mode auto-off"
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.zigbee_permit_join
+        to: "on"
+        for: "00:15:00"
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.zigbee_permit_join
+      - action: notify.notify
+        data:
+          title: "Zigbee"
+          message: "Pairing mode auto-closed after 15 minutes."
+    mode: single
+
+  # ── Notify when a device successfully joins ───────────────────────────
+  # Z2M publishes interview lifecycle events on zigbee2mqtt/bridge/event.
+  # We only care about a *successful* interview — that's the moment the
+  # device is usable, and the moment you should rename it (see README:
+  # entities created before the rename keep address-based IDs forever).
+  - id: zigbee_new_device_paired
+    alias: "Zigbee: new device paired"
+    triggers:
+      - trigger: mqtt
+        topic: "zigbee2mqtt/bridge/event"
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ trigger.payload_json is defined
+             and trigger.payload_json.type == 'device_interview'
+             and trigger.payload_json.data.status == 'successful' }}
+    actions:
+      - action: notify.notify
+        data:
+          title: "Zigbee"
+          message: >-
+            Device paired: {{ trigger.payload_json.data.friendly_name }}
+            {%- if trigger.payload_json.data.definition %}
+            ({{ trigger.payload_json.data.definition.description }})
+            {%- endif %}.
+            Rename it in Z2M before building automations on it.
+    # queued: pairing a batch of bulbs fires several of these in quick
+    # succession — don't drop any.
+    mode: queued
+    max: 10

@@ -1,0 +1,412 @@
+# ═══════════════════════════════════════════════════════════════════════
+# Smart lock package — production front-door automations
+# ═══════════════════════════════════════════════════════════════════════
+# Copy this file into /config/packages/ (the kit's base config loads
+# packages via `homeassistant: packages: !include_dir_named packages`),
+# then rename the entities listed in the component README.
+#
+# What's in here:
+#   1. Helpers        — opt-in switches + the curfew time
+#   2. Announce script — single place to point at YOUR speaker/TTS
+#   3. Safety net     — unlocked-too-long warning, night check, battery
+#   4. Convenience    — auto-unlock-when-home policy (OPT-IN, read the
+#                       README security notes before enabling)
+#   5. Bedtime        — curfew autolock with a fallback phone nudge
+#   6. Verification   — post-unlock bolt check. The single most valuable
+#                       automation in this file. Do not skip it.
+# ═══════════════════════════════════════════════════════════════════════
+
+# ─── 1. Helpers ─────────────────────────────────────────────────────────
+input_boolean:
+  # Master switch for the auto-unlock policy (sections 4a + 4b).
+  # Deliberately defaults OFF on first install — auto-unlock is a real
+  # security trade-off (see README) and should be a conscious opt-in,
+  # not something a copied file silently enables.
+  lock_auto_unlock:
+    name: "Lock: auto-unlock when home"
+    icon: mdi:lock-open-check
+
+  # Autolock strategy selector for section 5.
+  #   OFF (default) = plain lock.lock — works on locks with remote locking.
+  #   ON            = the "unlock-re-arm" trick for Yale Conexis L2-class
+  #                   locks where lock.lock is a silent no-op but the
+  #                   lock's own auto-relock timer fires ~35 s after ANY
+  #                   unlock event. See the comments in section 5 and the
+  #                   README before turning this on — it is a quirk
+  #                   workaround, not a first choice.
+  lock_use_rearm_trick:
+    name: "Lock: use unlock-re-arm autolock trick"
+    icon: mdi:lock-reset
+
+input_datetime:
+  # The curfew boundary. Auto-unlock is allowed BEFORE this time; the
+  # bedtime autolock fires AT it. One value, no drift between the two.
+  #
+  # GOTCHA: `initial:` on an input helper resets the value at EVERY Home
+  # Assistant restart. That's intentional here (the YAML is the source of
+  # truth), but it means a change made from the UI slider quietly reverts
+  # at the next restart — edit this file instead.
+  lock_curfew:
+    name: "Lock: curfew time"
+    has_date: false
+    has_time: true
+    initial: "21:00"
+    icon: mdi:clock-alert-outline
+
+# ─── 2. Announce script ─────────────────────────────────────────────────
+# Every spoken alert in this package goes through this one script, so
+# swapping in your own speaker or TTS engine is a one-place edit.
+# If you have no speaker, replace the sequence with a notify.notify call
+# (or just leave it — a missing media_player fails quietly per-call).
+script:
+  lock_announce:
+    alias: "Lock: announce on speaker"
+    description: "Single routing point for all spoken lock alerts."
+    # queued: overlapping alerts play one after another instead of the
+    # second call erroring out against a busy script.
+    mode: queued
+    fields:
+      message:
+        description: "Text to speak"
+        example: "The front door is still unlocked."
+    sequence:
+      - action: tts.speak
+        target:
+          entity_id: tts.home_assistant_cloud # ← or your TTS entity (e.g. tts.piper)
+        data:
+          media_player_entity_id: media_player.announce_speaker # ← your speaker
+          message: "{{ message }}"
+
+automation:
+  # ─── 3a. Unlocked too long ────────────────────────────────────────────
+  - id: smart_lock_unlocked_warning
+    alias: "Lock: door unlocked too long"
+    description: "Warn if the front door has been unlocked for 5 minutes"
+    triggers:
+      - trigger: state
+        entity_id: lock.front_door
+        to: "unlocked"
+        for: "00:05:00"
+    actions:
+      - action: script.lock_announce
+        data:
+          message: "The front door has been unlocked for five minutes."
+    mode: single
+
+  # ─── 3b. Night check ──────────────────────────────────────────────────
+  # A second, spoken reminder roughly an hour after curfew, in case the
+  # bedtime autolock's phone nudge (section 5) was missed. Set this to
+  # about an hour after your curfew time.
+  - id: smart_lock_night_check
+    alias: "Lock: night check (spoken backup)"
+    description: "TTS reminder if the door is still unlocked late in the evening"
+    triggers:
+      - trigger: time
+        at: "22:00:00"
+    conditions:
+      - condition: state
+        entity_id: lock.front_door
+        state: "unlocked"
+    actions:
+      - action: script.lock_announce
+        data:
+          message: "The front door is still unlocked. You may want to lock it before bed."
+    mode: single
+
+  # ─── 3c. Battery low ──────────────────────────────────────────────────
+  # 20% sounds early, but most smart locks run on lithium primary cells
+  # (CR2 / CR123A), which hold a near-flat voltage and then fall off a
+  # cliff. A reported 20% can mean days, not weeks — and cold weather
+  # accelerates the drop. Replace promptly; a dead lock battery is one of
+  # the silent-unlock-failure causes that section 6 exists to catch.
+  - id: smart_lock_battery_low
+    alias: "Lock: battery low"
+    description: "Alert when the lock battery drops below 20%"
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.front_door_battery
+        below: 20
+    actions:
+      - action: notify.notify
+        data:
+          title: "Front door lock battery low"
+          message: >-
+            Lock battery is at {{ states('sensor.front_door_battery') }}%.
+            Lithium cells die fast past this point — replace it now, not
+            next week.
+      - action: script.lock_announce
+        data:
+          message: "The front door lock battery is low. Time to replace it."
+    mode: single
+
+  # ─── 4. Auto-unlock policy ────────────────────────────────────────────
+  # POLICY CHOICE, stated plainly: "if someone is home and it's before
+  # curfew, the door should be unlocked — unless it was deliberately
+  # locked by hand." That is a convenience-over-security trade-off. It is
+  # OFF by default (input_boolean.lock_auto_unlock); read the README's
+  # security notes before opting in.
+  #
+  # Two automations cover the two ways a locked-while-home situation
+  # arises: the lock re-locking itself while you're in (4a), and arriving
+  # home to a locked door (4b).
+  #
+  # Manual-lock respect (4a only): locks with an "operator" diagnostic
+  # sensor (Yale Conexis L2-class) distinguish a physical press-to-lock
+  # (manual) from their internal auto-relock timer firing (autorelock).
+  # We only unlock on the latter, so a deliberate press-to-lock from
+  # inside stays in force until the door is next opened and closed
+  # (which is when the auto-relock fires again). If your lock has no such
+  # sensor, removing that condition means ANY lock event while home gets
+  # reversed — including one you meant. Think before deleting it.
+
+  # ─── 4a. Auto-unlock when home ────────────────────────────────────────
+  - id: smart_lock_auto_unlock_when_home
+    alias: "Lock: auto-unlock when home (before curfew, autorelock only)"
+    description: >-
+      Reopen the door after the lock's own auto-relock timer fires, if
+      someone is home and it's before curfew. Deliberate manual locks are
+      respected (they don't register as auto-relock).
+    triggers:
+      - trigger: state
+        entity_id: lock.front_door
+        to: "locked"
+        # 30 s grace: if you're on the way OUT, presence flips to away
+        # within this window and the condition below then blocks the
+        # unlock. Without the grace, the door reopens behind you.
+        for: "00:00:30"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.lock_auto_unlock
+        state: "on"
+      - condition: time
+        before: input_datetime.lock_curfew
+      - condition: state
+        entity_id: person.you
+        state: "home"
+      # Only if the lock auto-relocked itself — not if someone physically
+      # pressed the lock button. Yale Conexis L2-class locks expose this
+      # on their operator sensor. Other locks: see the policy comment
+      # above before removing this condition.
+      - condition: state
+        entity_id: sensor.front_door_operator
+        attribute: autorelock
+        state: true
+    actions:
+      - action: lock.unlock
+        target:
+          entity_id: lock.front_door
+    mode: single
+
+  # ─── 4b. Auto-unlock on arrival ───────────────────────────────────────
+  # Presence-source advice: GPS-zone arrival triggers are prone to false
+  # fires (drift near the geofence edge). A router/WiFi-based presence
+  # source with some hysteresis is far more trustworthy for anything that
+  # opens a door. Whatever the source, keep the settle delay below.
+  - id: smart_lock_auto_unlock_on_arrival
+    alias: "Lock: auto-unlock on arrival (before curfew)"
+    description: >-
+      When you arrive home before curfew and the door is locked,
+      unlock it after a short settle delay.
+    triggers:
+      - trigger: state
+        entity_id: person.you
+        from: "not_home"
+        to: "home"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.lock_auto_unlock
+        state: "on"
+      - condition: time
+        before: input_datetime.lock_curfew
+      - condition: state
+        entity_id: lock.front_door
+        state: "locked"
+    actions:
+      # Let presence settle — trackers can wobble for a few seconds right
+      # after reconnecting (WiFi re-association, GPS re-fix). Re-checking
+      # after the delay stops a one-second blip from opening the door.
+      - delay: "00:00:10"
+      - condition: state
+        entity_id: person.you
+        state: "home"
+      - condition: state
+        entity_id: lock.front_door
+        state: "locked"
+      - action: lock.unlock
+        target:
+          entity_id: lock.front_door
+    mode: single
+
+  # ─── 5. Bedtime autolock with fallback nudge ──────────────────────────
+  # At curfew, if the door is unlocked, lock it — then VERIFY it actually
+  # locked and nudge your phone if not. The nudge is not decoration: on
+  # locks that silently ignore lock.lock (see below), it is also your
+  # detector for "this lock can't be locked remotely at all".
+  #
+  # Two strategies, selected by input_boolean.lock_use_rearm_trick:
+  #
+  #   PLAIN (default) — lock.lock. Correct for any lock that supports
+  #   remote locking (most current models).
+  #
+  #   UNLOCK-RE-ARM (Yale Conexis L2 quirk workaround) — on this class of
+  #   lock, three motor paths behave differently: lock.lock is a silent
+  #   no-op, the vendor app's own lock button reports "jammed", BUT the
+  #   lock's internal auto-relock timer fires ~35 s after ANY unlock
+  #   event and locks reliably. So to remote-lock: call lock.unlock
+  #   (which works), and let the lock relock itself. Counter-intuitive
+  #   but it's the only remote path this hardware offers. HONESTY NOTE:
+  #   this trick has proven flaky in production — treat the phone nudge
+  #   as the real safety net and be prepared to walk to the door.
+  #
+  # No fight with section 4a: the relock happens AT curfew, and 4a only
+  # unlocks BEFORE curfew, so the auto-unlock policy never reverses the
+  # bedtime lock.
+  - id: smart_lock_bedtime_autolock
+    alias: "Lock: bedtime autolock (with fallback nudge)"
+    description: "Lock the door at curfew; nudge the phone if the bolt never moved"
+    triggers:
+      - trigger: time
+        at: input_datetime.lock_curfew
+    conditions:
+      - condition: state
+        entity_id: lock.front_door
+        state: "unlocked"
+    actions:
+      - choose:
+          # Plain path — locks that support remote locking.
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.lock_use_rearm_trick
+                state: "off"
+            sequence:
+              - action: lock.lock
+                target:
+                  entity_id: lock.front_door
+          # Unlock-re-arm path — Yale Conexis L2-class quirk workaround.
+          # The unlock arms the lock's own ~35 s auto-relock timer, which
+          # then does the actual locking.
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.lock_use_rearm_trick
+                state: "on"
+            sequence:
+              - action: lock.unlock
+                target:
+                  entity_id: lock.front_door
+      # 90 s covers a slow motor OR the ~35 s auto-relock timer, with
+      # margin. wait_for_trigger returns early on success, so the happy
+      # path doesn't sit here for the full window.
+      - wait_for_trigger:
+          - trigger: state
+            entity_id: lock.front_door
+            to: "locked"
+        timeout: "00:01:30"
+        continue_on_timeout: true
+      - if:
+          - condition: state
+            entity_id: lock.front_door
+            state: "unlocked"
+        then:
+          - action: notify.notify
+            data:
+              title: "Front door still unlocked"
+              message: >-
+                Bedtime autolock ran but the door is still unlocked after
+                90 seconds. Please lock it by hand.
+          - action: script.lock_announce
+            data:
+              message: "The front door did not lock. Please lock it by hand."
+    mode: single
+
+  # ─── 6. Post-unlock verification — the crown jewel ────────────────────
+  # WHY THIS EXISTS: smart-lock integrations can accept an unlock call
+  # and silently drop it. The service returns success, the calling
+  # automation's last_triggered updates as if everything worked, every
+  # entity still reports "loaded" — and the bolt never moves. Known
+  # causes: expired cloud auth (some vendors rotate the BLE offline key
+  # server-side and the refresh can stall for weeks, invisibly), a manual
+  # thumb-turn override engaged from inside, lost Bluetooth, or a dead
+  # battery. You only find out when someone is stood at the door.
+  #
+  # This automation listens for ANY lock.unlock service call targeting
+  # the front door (dashboard tap, voice, NFC, the arrival automation,
+  # a companion-app button — anything), waits 10 s, and if the lock is
+  # still locked, escalates loudly: speaks on the inside speaker and
+  # pushes to your phone. It does NOT try to remediate — a manual
+  # thumb-turn override can only be cleared by a human at the door — it
+  # just makes sure the people inside know to go and help.
+  #
+  # mode: restart — a burst of unlock attempts (someone tapping four
+  # times in a panic) collapses into ONE alert 10 s after the LAST
+  # attempt, rather than four alerts.
+  - id: smart_lock_unlock_verification
+    alias: "Lock: verify unlock moved the bolt"
+    description: >-
+      Catches the "silent absorb" failure mode where lock.unlock returns
+      success but the lock never physically moves (auth expiry, manual
+      override, lost Bluetooth, dead battery).
+    triggers:
+      - trigger: event
+        event_type: call_service
+        event_data:
+          domain: lock
+          service: unlock
+    conditions:
+      # The entity_id can land in either service_data or target depending
+      # on the caller — handle both, and handle both scalar and list
+      # forms. Callers are inconsistent about this; a naive check misses
+      # half of them.
+      - condition: template
+        value_template: >-
+          {% set sd = trigger.event.data.service_data | default({}) %}
+          {% set tg = trigger.event.data.target | default({}) %}
+          {% set sd_eid = sd.entity_id | default(none) %}
+          {% set tg_eid = tg.entity_id | default(none) %}
+          {% set sd_list = sd_eid if sd_eid is iterable and sd_eid is not string else ([sd_eid] if sd_eid else []) %}
+          {% set tg_list = tg_eid if tg_eid is iterable and tg_eid is not string else ([tg_eid] if tg_eid else []) %}
+          {{ 'lock.front_door' in sd_list or 'lock.front_door' in tg_list }}
+    actions:
+      # 10 s, NOT 5 s — this number is paid for. BLE lock unlock latency
+      # varies 4–8 s end-to-end (service call → Bluetooth round-trip →
+      # motor cycle → state report-back), and a cold Bluetooth path right
+      # after an integration reload hits the top of that range. 5 s is
+      # only safe when the caller is physically at the door (best-case
+      # radio proximity); remote calls travel a longer path and WILL
+      # false-alarm at 5 s while the lock then opens at 8 s.
+      - delay:
+          seconds: 10
+      - choose:
+          # Success branch — the bolt moved. Stay silent.
+          - conditions:
+              - condition: state
+                entity_id: lock.front_door
+                state: "unlocked"
+            sequence: []
+          # Failure branch — still locked after 10 s. Escalate. The cause
+          # is unknown at this point, so the message states the SYMPTOM,
+          # not a presumed cause.
+          - conditions: []
+            sequence:
+              - action: script.lock_announce
+                data:
+                  message: >-
+                    The front door didn't respond to unlock. Someone may
+                    be trying to come in. Please check the lock.
+              - action: notify.notify
+                data:
+                  title: "Front door unlock failed"
+                  message: >-
+                    Unlock fired but the lock didn't move within 10 s.
+                    Check HA Settings → Repairs (auth expiry), the lock
+                    battery, and Bluetooth range. Inside speaker also
+                    notified.
+                    {# If your lock exposes an operator/diagnostic
+                       sensor, append it here for hand-off, e.g.
+                       "Operator: {{ states('sensor.front_door_operator') }}" #}
+              - action: logbook.log
+                data:
+                  name: Front door
+                  message: >-
+                    Unlock service call did not produce a state change
+                    within 10 s. Occupants notified.
+    mode: restart

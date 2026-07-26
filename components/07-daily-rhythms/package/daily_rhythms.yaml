@@ -1,0 +1,506 @@
+# ============================================================================
+# 07-daily-rhythms — the house's daily light & comfort rhythm
+# ============================================================================
+# One package, one philosophy: SCHEDULES PROPOSE, HUMANS DISPOSE.
+#
+# Every automation in here is pure time-of-day (or a one-shot event like
+# sunset / arrival / a voice phrase). There are NO presence loops fighting
+# you: if you kill the lights at 18:00 they stay off until tomorrow morning;
+# if you turn them on at 22:00 they stay on (the evening-off has already
+# fired by then). The house suggests a rhythm; you always win.
+#
+# Rename the placeholder entity ids (see the component README's rename
+# table), drop this file into /config/packages/, restart, done.
+# ============================================================================
+
+# ── Room light group ────────────────────────────────────────────────────────
+# A YAML platform group makes two (or ten) bulbs behave as one entity.
+# turn_off on the group is a safe no-op for whichever bulb is already off,
+# and any bulb you ADD to the group later inherits every automation below
+# automatically — the schedule, the voice phrases, the goodnight macro.
+#
+# GOTCHA — YAML platform groups have NO entity-registry entry. That means
+# they cannot carry Assist voice aliases (there is nowhere to store them),
+# so natural phrasing variants ("study lamp", "my study lights", "study
+# lighting") bounce off the built-in intent matcher with no_valid_targets.
+# The fix is NOT more aliases — it's the conversation-trigger automations
+# further down, which route any phrasing you like straight to the group.
+light:
+  - platform: group
+    name: Study Lights
+    entities:
+      - light.study_lamp        # e.g. a warm-white-only table lamp
+      - light.study_pendant     # e.g. a full-colour ceiling pendant
+
+# ── Goodnight macro as a script ─────────────────────────────────────────────
+# The bedtime sequence lives in a script (not inline in the automation) so
+# it is callable from THREE places: the voice phrase below, a dashboard
+# button, and Developer Tools when you're testing. One sequence, no drift.
+script:
+  goodnight:
+    alias: "Goodnight — bedtime macro"
+    icon: mdi:weather-night
+    description: >
+      Lights off everywhere, bedside lamp low and warm for reading,
+      lock check on the front door, heating to night setback (bedroom
+      excluded — it keeps its own evening schedule so the room is warm
+      enough for sleep).
+    sequence:
+      - action: light.turn_off
+        target:
+          entity_id:
+            - light.living_room_pendant
+            - light.living_room_lamps
+            - light.hallway_lights
+            - light.study_lights
+      - action: switch.turn_off
+        target:
+          entity_id:
+            - switch.floor_lamp
+            - switch.worktop_lights
+      # Bedside stays on — low, deep warm, enough to read by, dim enough
+      # to fall asleep to.
+      - action: light.turn_on
+        target:
+          entity_id: light.bedside_lamp
+        data:
+          brightness_pct: 25
+          color_temp_kelvin: 2200
+      # Lock check — only touch the lock if it's actually unlocked, so a
+      # deliberate manual lock earlier in the evening is respected.
+      # GOTCHA: some smart locks silently no-op on a remote lock.lock (the
+      # command is accepted, the bolt never moves) but reliably re-lock via
+      # their own internal auto-relock timer. If yours is one of those, see
+      # the "unlock-re-arm trick" gotcha in this component's README.
+      - if:
+          - condition: state
+            entity_id: lock.front_door
+            state: "unlocked"
+        then:
+          - action: lock.lock
+            target:
+              entity_id: lock.front_door
+      # Night setback: every TRV except the bedroom down to 5°C. Note that
+      # 5°C is frost protection, NOT "off" — heat-only TRVs have no useful
+      # off state, and 5°C keeps the pipes safe in a cold snap while being
+      # effectively off the rest of the year.
+      - action: climate.set_temperature
+        target:
+          entity_id:
+            - climate.living_room_trv
+            - climate.kitchen_trv
+            - climate.hallway_trv
+            - climate.study_trv
+            - climate.bathroom_trv
+        data:
+          temperature: 5
+          hvac_mode: heat
+      # Bedroom TRV deliberately absent — its own evening schedule handles
+      # the right warm-then-setback curve for sleeping.
+
+automation:
+  # ══════════════════════════════════════════════════════════════════════
+  # ROOM LIGHT-GROUP SCHEDULE — on at 06:00 unless away, off at 21:00
+  # ══════════════════════════════════════════════════════════════════════
+
+  - id: daily_rhythms_room_lights_on_morning
+    alias: "Study lights — on at 06:00"
+    description: >
+      Daily 06:00 turn-on of the study light group. Skipped when nobody
+      would use the room (you're away). Wake-up warm-white at 70% / 2700K.
+    triggers:
+      - trigger: time
+        at: "06:00:00"
+    conditions:
+      # Skip only when the person tracker POSITIVELY says away. When the
+      # tracker is unknown/unavailable (phone rebooting, integration down),
+      # default to "fire anyway" rather than "silently skip" — the failure
+      # mode should favour a consistent morning, not a dark one.
+      - condition: template
+        value_template: >
+          {{ states('person.you') != 'not_home' }}
+    actions:
+      # GOTCHA: use `color_temp_kelvin` (canonical), NOT `kelvin` (a
+      # deprecated alias). `kelvin` works on a SINGLE light entity, but the
+      # HA group platform silently rejects it with HTTP 400 when fanning
+      # out to members — the automation trace shows "success" and the
+      # lights never turn on. This has cost real missed mornings.
+      #
+      # Mixed-capability groups are fine: a warm-white-only bulb ignores a
+      # kelvin value outside its range but still turns on at the requested
+      # brightness. The group fan-out is safe — as long as you use
+      # color_temp_kelvin.
+      - action: light.turn_on
+        target:
+          entity_id: light.study_lights
+        data:
+          brightness_pct: 70
+          color_temp_kelvin: 2700
+      # Breadcrumb in the logbook so "did the schedule fire this morning?"
+      # is answerable in two clicks. continue_on_error because a logging
+      # hiccup must never block the actual lights.
+      - action: logbook.log
+        continue_on_error: true
+        data:
+          name: Study lights
+          message: "06:00 schedule — on (70% / 2700K)"
+    mode: single
+
+  - id: daily_rhythms_room_lights_off_evening
+    alias: "Study lights — off at 21:00"
+    description: >
+      Daily 21:00 turn-off — a single check, not a loop. No-op if already
+      off. Turn them back on at 21:05 and they stay on: manual wins.
+    triggers:
+      - trigger: time
+        at: "21:00:00"
+    conditions:
+      - condition: state
+        entity_id: light.study_lights
+        state: "on"
+    actions:
+      - action: light.turn_off
+        target:
+          entity_id: light.study_lights
+      - action: logbook.log
+        continue_on_error: true
+        data:
+          name: Study lights
+          message: "21:00 schedule — off"
+    mode: single
+
+  # ── Voice control for the group ───────────────────────────────────────
+  # Because the YAML group can't carry Assist aliases (see the group
+  # definition above), these conversation triggers catch every natural
+  # phrasing and drive the group directly — deterministic, no fuzzy
+  # matching, no "sorry, no area called study".
+  #
+  # Sentence syntax:  [word] = optional   (a|b) = required choose-one
+  #                   [(a|b)] = optional choose-one
+  # Edit the room words (study|office) to match what you actually say.
+  #
+  # GOTCHA: you need BOTH word orders. "turn on the study lights" and
+  # "study lights on" are different sentences to the matcher — cover both
+  # or half your household's phrasing bounces.
+
+  - id: daily_rhythms_room_lights_voice_on
+    alias: "Study lights — voice on"
+    description: Turn the study group on from any natural "study light(s)/lamp on" phrasing.
+    triggers:
+      - trigger: conversation
+        command:
+          - "(turn|switch|put|pop|flick) on [the] [my] (study|office) (light|lights|lamp|lamps|lighting)"
+          - "[(turn|switch|put|pop|flick)] [the] [my] (study|office) (light|lights|lamp|lamps) on"
+          - "lights on in [the] (study|office)"
+    actions:
+      - action: light.turn_on
+        target:
+          entity_id: light.study_lights
+    mode: single
+
+  - id: daily_rhythms_room_lights_voice_off
+    alias: "Study lights — voice off"
+    description: Turn the study group off from any natural "study light(s)/lamp off" phrasing.
+    triggers:
+      - trigger: conversation
+        command:
+          - "(turn|switch|put|pop|flick) off [the] [my] (study|office) (light|lights|lamp|lamps|lighting)"
+          - "[(turn|switch|put|pop|flick)] [the] [my] (study|office) (light|lights|lamp|lamps) off"
+          - "lights off in [the] (study|office)"
+          - "(study|office) (light|lights) out"
+    actions:
+      - action: light.turn_off
+        target:
+          entity_id: light.study_lights
+    mode: single
+
+  # ══════════════════════════════════════════════════════════════════════
+  # SUNSET WARM-ON — a quiet pool of light in the living space
+  # ══════════════════════════════════════════════════════════════════════
+  # At sunset −10 min, if the room is currently dark and someone is home,
+  # fade in low warm light. One-shot: if you turn it off afterwards it
+  # stays off. The "someone home" guard avoids lighting an empty house;
+  # the "currently off" guard avoids stomping on a scene or brightness
+  # you already chose.
+
+  - id: daily_rhythms_sunset_warm_on
+    alias: "Living room — warm-on at sunset"
+    description: >
+      Sunset −10 min, lamps currently dark, someone home → living-room
+      lamps on at 30% deep warm.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: sun
+        event: sunset
+        offset: "-00:10:00"
+    conditions:
+      - condition: or
+        conditions:
+          - condition: state
+            entity_id: person.you
+            state: "home"
+          - condition: state
+            entity_id: person.partner
+            state: "home"
+      - condition: state
+        entity_id: light.living_room_lamps
+        state: "off"
+    actions:
+      - action: light.turn_on
+        target:
+          entity_id: light.living_room_lamps
+        data:
+          brightness_pct: 30
+          color_temp_kelvin: 2400
+
+  # ══════════════════════════════════════════════════════════════════════
+  # BEDSIDE — evening auto-on + morning warm fade
+  # ══════════════════════════════════════════════════════════════════════
+
+  - id: daily_rhythms_bedside_evening_on
+    alias: "Bedside — auto-on at 22:00"
+    description: >
+      Bedside lamp on at 22:00 every night, warm and dim (2200K, 40%),
+      for winding down. Skips if already on — if you turned it on earlier
+      and set your own brightness, that choice is respected.
+    triggers:
+      - trigger: time
+        at: "22:00:00"
+    conditions:
+      - condition: state
+        entity_id: light.bedside_lamp
+        state: "off"
+    actions:
+      - action: light.turn_on
+        target:
+          entity_id: light.bedside_lamp
+        data:
+          brightness_pct: 40
+          color_temp_kelvin: 2200
+    mode: single
+
+  - id: daily_rhythms_bedside_morning_fade
+    alias: "Bedside — warm fade-on at 06:00"
+    description: >
+      Daily 06:00, fade the bedside lamp from barely-on to 60% warm over
+      90 seconds. A gentle wake-up rather than a brutal full-on.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: time
+        at: "06:00:00"
+    actions:
+      # GOTCHA — the two-step fade. Many Zigbee/WiFi bulbs "transition"
+      # from OFF by snapping to their remembered last brightness first,
+      # which defeats the whole point of a fade. So: pin the start point
+      # at 1% explicitly, give the bulb one second to settle, THEN ask
+      # for the long transition up. Result: a true dawn-style ramp.
+      - action: light.turn_on
+        target:
+          entity_id: light.bedside_lamp
+        data:
+          brightness_pct: 1
+          color_temp_kelvin: 2400
+      - delay: "00:00:01"
+      - action: light.turn_on
+        target:
+          entity_id: light.bedside_lamp
+        data:
+          brightness_pct: 60
+          color_temp_kelvin: 2700
+          transition: 90
+
+  # ══════════════════════════════════════════════════════════════════════
+  # GOODNIGHT — one phrase to put the house to bed
+  # ══════════════════════════════════════════════════════════════════════
+
+  - id: daily_rhythms_goodnight_macro
+    alias: "Voice — 'goodnight' → bedtime macro"
+    description: >
+      "Goodnight" (and variants) runs the goodnight script: lights off
+      everywhere, bedside low + warm, lock check, heating to night setback.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: conversation
+        command:
+          - "goodnight"
+          - "good night"
+          - "bedtime"
+          - "[we're] going to bed"
+          - "set bedtime"
+    actions:
+      - action: script.turn_on
+        target:
+          entity_id: script.goodnight
+
+  # ══════════════════════════════════════════════════════════════════════
+  # EMPTY-HOUSE DEEP SETBACK — the symmetric "we're really not here" case
+  # ══════════════════════════════════════════════════════════════════════
+  # When both people have been away for 2 hours, drop every radiator to
+  # frost protection and snuff the lights. The 2-hour dwell means popping
+  # to the shops never triggers it. Each person's departure starts their
+  # own 2-hour clock; the conditions re-check that BOTH are still away at
+  # fire time, so the automation only acts when the house is genuinely
+  # empty.
+
+  - id: daily_rhythms_empty_house_setback
+    alias: "Empty house — deep setback after 2hr away"
+    description: >
+      Both people away for 2hrs → all TRVs to 5°C (frost protection),
+      all lights off. A persistent notification records that it fired.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: state
+        entity_id:
+          - person.you
+          - person.partner
+        to: "not_home"
+        for: "02:00:00"
+    conditions:
+      - condition: state
+        entity_id: person.you
+        state: "not_home"
+      - condition: state
+        entity_id: person.partner
+        state: "not_home"
+    actions:
+      # Unlike the goodnight macro, this DOES include the bedroom — nobody
+      # is home to sleep in it.
+      - action: climate.set_temperature
+        target:
+          entity_id:
+            - climate.living_room_trv
+            - climate.kitchen_trv
+            - climate.hallway_trv
+            - climate.study_trv
+            - climate.bathroom_trv
+            - climate.bedroom_trv
+        data:
+          temperature: 5
+          hvac_mode: heat
+      - action: light.turn_off
+        target:
+          entity_id:
+            - light.living_room_pendant
+            - light.living_room_lamps
+            - light.hallway_lights
+            - light.study_lights
+            - light.bedside_lamp
+      - action: switch.turn_off
+        target:
+          entity_id:
+            - switch.floor_lamp
+            - switch.worktop_lights
+      # persistent_notification works on a fresh install with zero setup.
+      # Swap for (or add) notify.notify once you've wired a real notifier
+      # — see the README.
+      - action: persistent_notification.create
+        data:
+          title: "House: empty for 2hr"
+          message: "Both away → radiators to frost protection, lights off."
+          notification_id: empty_house_setback
+
+  # ══════════════════════════════════════════════════════════════════════
+  # WELCOME-HOME PALETTE — warm light when you walk in after dark
+  # ══════════════════════════════════════════════════════════════════════
+
+  - id: daily_rhythms_welcome_home_palette
+    alias: "Welcome home — warm lighting after dark"
+    description: >
+      Someone arrives home after >2hr away AND it's past (nearly) sunset →
+      hallway warm at 70% for 5 minutes, living-room pendant low amber.
+      Then the hallway settles back down so it doesn't fight whatever you
+      choose next.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: state
+        entity_id:
+          - person.you
+          - person.partner
+        from: "not_home"
+        to: "home"
+    conditions:
+      # After sunset only (with a 30-min head start — dusk counts). No
+      # point spending light on a daytime arrival.
+      - condition: sun
+        after: sunset
+        after_offset: "-00:30:00"
+      # The person was away long enough to count as a genuine RETURN.
+      # GPS presence flickers — a phone can briefly report not_home from
+      # the sofa. Requiring >2hr in the away state filters the flicker
+      # without delaying a real welcome.
+      - condition: template
+        value_template: >
+          {% set last = trigger.from_state.last_changed %}
+          {{ last is not none and (trigger.to_state.last_changed - last).total_seconds() > 7200 }}
+    actions:
+      - action: light.turn_on
+        target:
+          entity_id: light.hallway_lights
+        data:
+          brightness_pct: 70
+          color_temp_kelvin: 2400
+      - action: light.turn_on
+        target:
+          entity_id: light.living_room_pendant
+        data:
+          brightness_pct: 35
+          color_temp_kelvin: 2200
+      # 5-minute auto-revert: the bright welcome is a moment, not a state.
+      # Settling back to 40% means the automation never overrides scenes
+      # or manual changes you make once you're in and settled.
+      - delay: "00:05:00"
+      - action: light.turn_on
+        target:
+          entity_id: light.hallway_lights
+        data:
+          brightness_pct: 40
+          color_temp_kelvin: 2400
+
+  # ══════════════════════════════════════════════════════════════════════
+  # VOICE-TOGGLED DUMB PLUG — the exemplar pattern
+  # ══════════════════════════════════════════════════════════════════════
+  # Any "dumb" light on a smart plug (a bench light rack, fairy lights,
+  # an awkward corner lamp) gets first-class voice control with two tiny
+  # automations. This is the same pattern the light-group voice control
+  # above uses — copy it for every plug-fed light in the house.
+  #
+  # Why not just rely on the built-in "turn on <name>" intent? It works
+  # for the exact friendly name only. The alternation below covers every
+  # word your household actually uses for the thing (work / worktop /
+  # bench / counter...), in both word orders, deterministically.
+  #
+  # Renaming note: conversation triggers target the ENTITY ID, so you can
+  # freely rename the device's friendly name later without breaking these.
+
+  - id: daily_rhythms_worktop_plug_voice_on
+    alias: "Worktop lights — voice on"
+    description: Turn the worktop light plug on from any "work/worktop/bench lights on" phrasing.
+    triggers:
+      - trigger: conversation
+        command:
+          - "(turn|switch|put|pop|flick) on [the] (work|working|worktop|worktops|workbench|bench|counter|countertop) light[s]"
+          - "[(turn|switch|put|pop|flick)] [the] (work|working|worktop|worktops|workbench|bench|counter|countertop) light[s] on"
+    actions:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.worktop_lights
+    mode: single
+
+  - id: daily_rhythms_worktop_plug_voice_off
+    alias: "Worktop lights — voice off"
+    description: Turn the worktop light plug off from any "work/worktop/bench lights off" phrasing.
+    triggers:
+      - trigger: conversation
+        command:
+          - "(turn|switch|put|pop|flick) off [the] (work|working|worktop|worktops|workbench|bench|counter|countertop) light[s]"
+          - "[(turn|switch|put|pop|flick)] [the] (work|working|worktop|worktops|workbench|bench|counter|countertop) light[s] off"
+    actions:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.worktop_lights
+    mode: single

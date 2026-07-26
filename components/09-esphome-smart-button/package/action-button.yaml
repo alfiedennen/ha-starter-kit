@@ -1,0 +1,146 @@
+# ─────────────────────────────────────────────────────────────────────
+# Component 09 — ESPHome smart button (Home Assistant side)
+#
+# Pairs with esphome/action-button.yaml (the device firmware). The
+# button exposes binary_sensor.action_button_press; this package wires
+# a press to an action, then calls back into the device so it beeps
+# success or error — audible confirmation at the button itself.
+#
+# The default action is deliberately boring and safe: toggle a light.
+# A fully-worked lock.unlock variant (with state verification and
+# success/failure branches) is included below as comments — swap it in
+# once the simple version works.
+# ─────────────────────────────────────────────────────────────────────
+
+automation:
+  # ── Default: press → toggle a light ─────────────────────────────────
+  - id: action_button_pressed
+    alias: "Button: Action button pressed"
+    description: >-
+      Physical button press toggles a light and beeps the button so you
+      hear that the press landed in Home Assistant.
+    # mode: single — a second press while this is still running is
+    # DROPPED, which prevents button-mash double-fires. People reliably
+    # press twice when nothing visibly happens within a second; without
+    # this, one nervous jab becomes two toggles and the light ends up
+    # back where it started.
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.action_button_press
+        from: "off"
+        to: "on"
+    actions:
+      - action: light.toggle
+        target:
+          entity_id: light.hallway_pendant
+      # Callback beep — requires the ESPHome device's "Allow the device
+      # to perform Home Assistant actions" option to be ON, otherwise
+      # this returns 403 and the button stays silent (see README).
+      - action: esphome.action_button_beep_success
+
+  # ── Lock variant (commented) — press → unlock, verify, beep ─────────
+  #
+  # The pattern that matters here: DO NOT trust the service call.
+  # Smart locks (especially BLE ones) can accept lock.unlock, report
+  # success to HA, and never move the bolt — expired cloud auth, a
+  # manual thumb-turn override, lost Bluetooth, a dying battery. The
+  # only truth is the lock's STATE, checked after a generous delay.
+  #
+  # The 10s wait is calibrated, not arbitrary: BLE lock unlock latency
+  # runs 4-8s end-to-end (service call → BT round-trip → motor cycle →
+  # state report-back), and the cold-Bluetooth path after an
+  # integration reload hits the top of that range. A 5s wait WILL
+  # false-alarm on a healthy lock. Err long — a late success beep
+  # beats a false error.
+  #
+  # mode: restart (not single) on this variant: a burst of panicked
+  # presses collapses into ONE verification 10s after the LAST press,
+  # rather than a pile-up of alerts.
+  #
+  # - id: action_button_unlock_door
+  #   alias: "Button: Unlock front door"
+  #   description: >-
+  #     Physical button unlocks the front door, verifies the bolt
+  #     actually moved, and beeps success or error on the button.
+  #   mode: restart
+  #   triggers:
+  #     - trigger: state
+  #       entity_id: binary_sensor.action_button_press
+  #       from: "off"
+  #       to: "on"
+  #   actions:
+  #     - action: lock.unlock
+  #       target:
+  #         entity_id: lock.front_door
+  #     # Wait for the motor + state report-back before judging.
+  #     - delay:
+  #         seconds: 10
+  #     - choose:
+  #         # Success branch — the bolt really moved.
+  #         - conditions:
+  #             - condition: state
+  #               entity_id: lock.front_door
+  #               state: "unlocked"
+  #           sequence:
+  #             - action: esphome.action_button_beep_success
+  #             # Spoken confirmation on a FIXED speaker near the door —
+  #             # not a presence-routed announce script. The person who
+  #             # pressed the button is AT the door; routing the
+  #             # confirmation to wherever your phone happens to be
+  #             # plays it in the wrong room.
+  #             - action: tts.speak
+  #               target:
+  #                 entity_id: tts.home_assistant_cloud
+  #               data:
+  #                 media_player_entity_id: media_player.announce_speaker
+  #                 message: "Front door unlocked."
+  #             - action: notify.notify
+  #               data:
+  #                 message: "Front door unlocked via the physical button."
+  #         # Failure branch — still locked after 10s. State the
+  #         # SYMPTOM, not a guessed cause: it could be auth expiry, a
+  #         # manual override, lost BT, or a dead battery, and a wrong
+  #         # guess sends you debugging the wrong thing.
+  #         - conditions: []
+  #           sequence:
+  #             - action: esphome.action_button_beep_error
+  #             - action: tts.speak
+  #               target:
+  #                 entity_id: tts.home_assistant_cloud
+  #               data:
+  #                 media_player_entity_id: media_player.announce_speaker
+  #                 message: >-
+  #                   The front door did not respond to unlock. Please
+  #                   check the lock.
+  #             - action: notify.notify
+  #               data:
+  #                 message: >-
+  #                   Front door unlock fired from the button but the
+  #                   lock didn't move within 10s. Check the lock
+  #                   integration, battery, and Bluetooth range.
+  #             - action: logbook.log
+  #               data:
+  #                 name: Action button
+  #                 message: "Unlock press did not produce a state change within 10s."
+
+  # ── Watchdog: button gone offline ───────────────────────────────────
+  # A dead button is a SILENT failure — you only find out when you
+  # press it and nothing happens, which for a door-unlock button is the
+  # worst possible moment. 30 minutes of `unavailable` covers router
+  # reboots and brief WiFi drops without nagging.
+  - id: action_button_offline_alert
+    alias: "Button: Offline alert"
+    description: "Notify if the action button has been unreachable for 30 minutes."
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.action_button_press
+        to: "unavailable"
+        for: "00:30:00"
+    actions:
+      - action: notify.notify
+        data:
+          message: >-
+            The action button has been offline for 30 minutes. Check its
+            power and WiFi.

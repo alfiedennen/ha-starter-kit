@@ -1,0 +1,601 @@
+# ══════════════════════════════════════════════════════════════════════
+# Wall Tablet dashboard — portrait kiosk, 3 views (Home / Heat / Lights)
+# ══════════════════════════════════════════════════════════════════════
+#
+# Designed for a wall-mounted Android tablet in portrait (~1200×1920),
+# viewed and touched at arm's length. Everything is deliberately BIG —
+# a wall tablet is not a phone; default HA card sizes are unusably small
+# from a metre away.
+#
+# REGISTRATION (configuration.yaml) — copy this file to
+# /config/dashboards/wall-tablet.yaml, then add:
+#
+#   lovelace:
+#     mode: storage
+#     dashboards:
+#       wall-tablet:                 # ← the URL slug. MUST contain a hyphen!
+#         mode: yaml
+#         title: Wall Tablet
+#         icon: mdi:tablet
+#         show_in_sidebar: true
+#         filename: dashboards/wall-tablet.yaml
+#
+# ⚠ HARD RULE: every dashboard key (the URL slug) MUST contain a hyphen.
+# HA's lovelace validator rejects single-word keys ("Url path needs to
+# contain a hyphen (-)") — and when lovelace setup fails, HA boots into
+# RECOVERY MODE (empty sidebar, warning banner). `ha core check` does NOT
+# catch this: the per-key slug validation only runs during full setup.
+# After touching the dashboards block, restart fully and confirm
+# recovery_mode is false (Settings → System, or GET /api/config).
+#
+# HACS frontend dependencies (see README for install steps):
+#   mushroom · card-mod · layout-card · kiosk-mode
+#
+# Kiosk browser start URL (belt-and-braces with the kiosk_mode block):
+#   http://homeassistant.local:8123/wall-tablet/home?kiosk=true
+# ══════════════════════════════════════════════════════════════════════
+
+title: Wall Tablet
+
+# Hide HA chrome (sidebar, header, user menu) on this dashboard — the
+# wall tablet is a dedicated kiosk surface; the chip nav below is the
+# only navigation. Needs the kiosk-mode HACS plugin. Keep ?kiosk=true on
+# the kiosk browser's start URL as well: if the plugin ever fails to
+# load, the URL param still hides most chrome.
+kiosk_mode:
+  kiosk: true
+  hide_header: true
+  hide_sidebar: true
+  ignore_entity_settings: true
+
+# ── YAML anchors ──────────────────────────────────────────────────────
+# THE core pattern of this dashboard: define each sizing/typography
+# treatment ONCE as an anchor (&name), then attach it to every card of
+# that role with an alias (*name). Change one anchor → the whole
+# dashboard updates consistently. Without this you end up hand-tweaking
+# 40 cards and they drift apart within a week.
+
+# Chip navigation — shared by every view so the nav never gets out of
+# sync between views. Add a view? Add one chip here, done everywhere.
+tablet_nav: &tablet_nav
+  - type: template
+    icon: mdi:home
+    content: Home
+    icon_color: teal
+    tap_action: { action: navigate, navigation_path: /wall-tablet/home }
+  - type: template
+    icon: mdi:radiator
+    content: Heat
+    icon_color: orange
+    tap_action: { action: navigate, navigation_path: /wall-tablet/heat }
+  - type: template
+    icon: mdi:lightbulb
+    content: Lights
+    icon_color: amber
+    tap_action: { action: navigate, navigation_path: /wall-tablet/lights }
+
+# Main chip nav — 150px tall for finger-from-a-metre targets.
+# Width maths worth knowing before you add tabs: at 2em text a 6-letter
+# label makes a chip ~230px wide. Five chips + four 16px gaps ≈ 1214px —
+# already over a 1200px portrait panel. So keep nav labels SHORT
+# ("Heat", not "Heating") and think twice past 5 tabs.
+#
+# card-mod syntax trap (the big one): `style:` accepts EITHER a plain
+# `|` block scalar (styles the card root only) OR a mapping with
+# `.: |` for the root plus `<element>$: |` entries that pierce that
+# element's shadow DOM. Mushroom renders its labels INSIDE the shadow
+# DOM, so anything targeting `.chip`, `.primary`, `.secondary` etc.
+# MUST use the mapping form with the `$` selector — the scalar form
+# silently does nothing to them.
+wall_chips: &wall_chips
+  style:
+    mushroom-template-chip$: |
+      .chip {
+        height: 150px !important;
+        padding: 0 28px !important;
+        border-radius: 75px !important;
+        font-size: 2em !important;
+        line-height: 1 !important;
+        gap: 16px !important;
+      }
+      ha-state-icon, ha-icon { --mdc-icon-size: 62px !important; }
+      .content {
+        font-size: 1em !important;
+        font-weight: 500 !important;
+        line-height: 1 !important;
+        letter-spacing: 0.005em;
+      }
+    .: |
+      ha-card { --chip-spacing: 16px; }
+      mushroom-chips-card {
+        padding: 28px 8px 14px 8px !important;
+        justify-content: center !important;
+      }
+
+# Secondary chip row — smaller than the main nav, for quick actions and
+# status readouts underneath it.
+wall_chips_small: &wall_chips_small
+  style:
+    mushroom-template-chip$: |
+      .chip {
+        height: 90px !important;
+        padding: 0 20px !important;
+        border-radius: 45px !important;
+        font-size: 1.3em !important;
+        line-height: 1 !important;
+        gap: 12px !important;
+      }
+      ha-state-icon, ha-icon { --mdc-icon-size: 40px !important; }
+      .content {
+        font-size: 1em !important;
+        font-weight: 500 !important;
+        line-height: 1 !important;
+        letter-spacing: 0.005em;
+        /* tabular numerals so live values (battery %, temps) don't
+           jiggle the layout as digits change width */
+        font-feature-settings: "tnum";
+      }
+    .: |
+      ha-card { --chip-spacing: 12px; }
+      mushroom-chips-card {
+        padding: 4px 12px 16px 12px !important;
+        justify-content: center !important;
+      }
+
+# Action tiles (scenes, buttons) — 140px minimum so a sofa-distance tap
+# can't miss. NOTE the second trap: mushroom's sizing custom properties
+# (--card-primary-font-size, --icon-size, …) must be set on the
+# mushroom-*-card HOST element, NOT on ha-card — set on ha-card they
+# simply don't cascade into the component and you'll wonder why nothing
+# changed.
+wall_action: &wall_action
+  style:
+    .: |
+      ha-card { min-height: 140px; }
+      mushroom-template-card {
+        --card-primary-font-size: 1.4em !important;
+        --card-secondary-font-size: 1em !important;
+        --icon-size: 56px !important;
+      }
+    mushroom-template-card$: |
+      .primary {
+        font-weight: 500;
+        letter-spacing: 0.005em;
+      }
+      .secondary {
+        font-style: italic;
+        font-feature-settings: "tnum";
+        opacity: 0.85;
+      }
+
+# Headline tiles — the two big can't-miss buttons at the top of Home.
+wall_hero: &wall_hero
+  style:
+    .: |
+      ha-card { min-height: 240px; }
+      mushroom-template-card {
+        --card-primary-font-size: 2.2em !important;
+        --card-secondary-font-size: 1.1em !important;
+        --icon-size: 90px !important;
+      }
+    mushroom-template-card$: |
+      .primary {
+        font-weight: 500;
+        letter-spacing: 0.005em;
+      }
+      .secondary {
+        font-style: italic;
+        font-feature-settings: "tnum";
+        opacity: 0.85;
+      }
+
+# Climate cards — compact 100px glance rows; the full control dial lives
+# in the more-info popup (tap anywhere on the card).
+wall_climate: &wall_climate
+  style:
+    .: |
+      ha-card { min-height: 100px; padding: 6px; }
+      mushroom-climate-card {
+        --card-primary-font-size: 1.3em !important;
+        --card-secondary-font-size: 1em !important;
+        --icon-size: 46px !important;
+      }
+    mushroom-climate-card$: |
+      .primary {
+        font-weight: 500;
+        letter-spacing: 0.005em;
+      }
+      .secondary {
+        font-feature-settings: "tnum";
+        opacity: 0.85;
+      }
+
+# Light cards — 100px min-height DELIBERATELY matches wall_climate so
+# the Lights column and Climate column on Home stay row-aligned.
+wall_light: &wall_light
+  style:
+    .: |
+      ha-card { min-height: 100px; padding: 6px; }
+      mushroom-light-card {
+        --card-primary-font-size: 1.2em !important;
+        --card-secondary-font-size: 0.95em !important;
+        --icon-size: 42px !important;
+      }
+    mushroom-light-card$: |
+      .primary {
+        font-weight: 500;
+        letter-spacing: 0.005em;
+      }
+      .secondary {
+        font-feature-settings: "tnum";
+        opacity: 0.85;
+      }
+
+views:
+  # ════════════════════════════════════════════════════════════════════
+  # HOME — chip nav, two hero actions, scenes, lights col + climate col,
+  # tablet self-status. Panel mode + layout-card = pixel control of the
+  # portrait grid (normal masonry view fights you on a fixed screen).
+  # ════════════════════════════════════════════════════════════════════
+  - title: Home
+    path: home
+    # If you run a custom theme, set it per view here (theme: my_theme).
+    type: panel
+    cards:
+      - type: custom:layout-card
+        layout_type: custom:grid-layout
+        layout:
+          grid-template-columns: 1fr 1fr
+          grid-gap: 14px
+          margin: 10px
+        cards:
+          # Chip nav (full width)
+          - type: custom:mushroom-chips-card
+            view_layout: { grid-column: 1 / -1 }
+            alignment: center
+            card_mod: *wall_chips
+            chips: *tablet_nav
+
+          # Hero pair — the two things everyone actually does at a wall
+          # tablet: set the evening mood, and kill everything on the way
+          # out. `entity_id: all` on light.turn_off is built-in HA — no
+          # group helper needed.
+          - type: custom:mushroom-template-card
+            primary: Evening
+            secondary: Warm lights on
+            icon: mdi:weather-sunset
+            icon_color: orange
+            fill_container: true
+            card_mod: *wall_hero
+            tap_action:
+              action: call-service
+              service: scene.turn_on
+              target: { entity_id: scene.evening }
+          - type: custom:mushroom-template-card
+            primary: All Off
+            secondary: Every light in the house
+            icon: mdi:lightbulb-group-off
+            icon_color: grey
+            fill_container: true
+            card_mod: *wall_hero
+            tap_action:
+              action: call-service
+              service: light.turn_off
+              target: { entity_id: all }
+              confirmation: { text: "Turn off every light?" }
+
+          # Scenes — row of 3 vertical tiles
+          - type: custom:layout-card
+            view_layout: { grid-column: 1 / -1 }
+            layout_type: custom:grid-layout
+            layout:
+              grid-template-columns: repeat(3, 1fr)
+              grid-gap: 12px
+            cards:
+              - type: custom:mushroom-template-card
+                primary: Bright
+                icon: mdi:white-balance-sunny
+                icon_color: amber
+                layout: vertical
+                fill_container: true
+                card_mod: *wall_action
+                tap_action:
+                  action: call-service
+                  service: scene.turn_on
+                  target: { entity_id: scene.bright }
+              - type: custom:mushroom-template-card
+                primary: Relax
+                icon: mdi:sofa
+                icon_color: deep-orange
+                layout: vertical
+                fill_container: true
+                card_mod: *wall_action
+                tap_action:
+                  action: call-service
+                  service: scene.turn_on
+                  target: { entity_id: scene.relax }
+              - type: custom:mushroom-template-card
+                primary: Movie
+                icon: mdi:movie-open
+                icon_color: indigo
+                layout: vertical
+                fill_container: true
+                card_mod: *wall_action
+                tap_action:
+                  action: call-service
+                  service: scene.turn_on
+                  target: { entity_id: scene.movie }
+
+          # Left column: lights. Brightness slider inline; colour-temp
+          # collapses behind a tap so the column stays compact.
+          - type: vertical-stack
+            cards:
+              - type: custom:mushroom-light-card
+                entity: light.living_room
+                name: Living Room
+                show_brightness_control: true
+                show_color_temp_control: true
+                collapsible_controls: true
+                fill_container: true
+                card_mod: *wall_light
+              - type: custom:mushroom-light-card
+                entity: light.kitchen
+                name: Kitchen
+                show_brightness_control: true
+                collapsible_controls: true
+                fill_container: true
+                card_mod: *wall_light
+              - type: custom:mushroom-light-card
+                entity: light.hallway
+                name: Hallway
+                icon: mdi:ceiling-light-multiple
+                show_brightness_control: true
+                collapsible_controls: true
+                fill_container: true
+                card_mod: *wall_light
+              - type: custom:mushroom-light-card
+                entity: light.bedroom
+                name: Bedroom
+                icon: mdi:bed
+                show_brightness_control: true
+                show_color_temp_control: true
+                collapsible_controls: true
+                fill_container: true
+                card_mod: *wall_light
+              # Smart-plug lamps are switch entities, not lights — a
+              # plain entity card with a toggle does the job.
+              - type: custom:mushroom-entity-card
+                entity: switch.floor_lamp
+                name: Floor Lamp
+                icon: mdi:lamp
+                tap_action: { action: toggle }
+                fill_container: true
+
+          # Right column: room climate at a glance. tap → more-info is
+          # deliberate: the native popup already has the circular dial
+          # AND the live hvac_action ("heating"/"idle") badge — inline
+          # controls here just duplicate it and eat vertical space.
+          - type: vertical-stack
+            cards:
+              - type: custom:mushroom-climate-card
+                entity: climate.living_room
+                name: Living Room
+                hvac_modes: [heat]
+                fill_container: true
+                card_mod: *wall_climate
+                tap_action: { action: more-info }
+              - type: custom:mushroom-climate-card
+                entity: climate.kitchen
+                name: Kitchen
+                hvac_modes: [heat]
+                fill_container: true
+                card_mod: *wall_climate
+                tap_action: { action: more-info }
+              - type: custom:mushroom-climate-card
+                entity: climate.hallway
+                name: Hallway
+                hvac_modes: [heat]
+                fill_container: true
+                card_mod: *wall_climate
+                tap_action: { action: more-info }
+              - type: custom:mushroom-climate-card
+                entity: climate.bedroom
+                name: Bedroom
+                hvac_modes: [heat]
+                fill_container: true
+                card_mod: *wall_climate
+                tap_action: { action: more-info }
+
+          # Tablet self-status — pairs with the tablet-care package.
+          # Lets you spot a stuck charge cycle from the sofa.
+          - type: custom:mushroom-chips-card
+            view_layout: { grid-column: 1 / -1 }
+            alignment: center
+            card_mod: *wall_chips_small
+            chips:
+              - type: template
+                entity: sensor.wall_tablet_battery
+                icon: >-
+                  {% set b = states('sensor.wall_tablet_battery') | int(0) %}
+                  {% if b >= 80 %}mdi:battery-high
+                  {% elif b >= 50 %}mdi:battery-70
+                  {% elif b >= 20 %}mdi:battery-30
+                  {% else %}mdi:battery-alert{% endif %}
+                icon_color: >-
+                  {% set b = states('sensor.wall_tablet_battery') | int(0) %}
+                  {% if b >= 40 %}green{% elif b >= 20 %}amber{% else %}red{% endif %}
+                content: "{{ states('sensor.wall_tablet_battery') }}%"
+              - type: template
+                entity: binary_sensor.wall_tablet_plugged_in
+                icon: "{% if is_state('binary_sensor.wall_tablet_plugged_in','on') %}mdi:power-plug{% else %}mdi:power-plug-off{% endif %}"
+                icon_color: "{% if is_state('binary_sensor.wall_tablet_plugged_in','on') %}green{% else %}grey{% endif %}"
+                content: "{% if is_state('binary_sensor.wall_tablet_plugged_in','on') %}Charging{% else %}On battery{% endif %}"
+
+  # ════════════════════════════════════════════════════════════════════
+  # HEAT — full-size thermostat cards, 2-col grid, boost/frost actions
+  # ════════════════════════════════════════════════════════════════════
+  - title: Heat
+    path: heat
+    type: panel
+    cards:
+      - type: custom:layout-card
+        layout_type: custom:grid-layout
+        layout:
+          grid-template-columns: 1fr
+          grid-gap: 16px
+          margin: 12px
+        cards:
+          - type: custom:mushroom-chips-card
+            alignment: center
+            card_mod: *wall_chips
+            chips: *tablet_nav
+
+          # 2 × N grid of climate cards. Inline +/- for quick nudges;
+          # tap the card for the more-info dial. Note we do NOT use HA's
+          # native thermostat card here: its primary label shows the
+          # hvac_MODE ("heat") rather than the hvac_ACTION
+          # ("heating"/"idle"), which is actively misleading on
+          # heat-only TRVs that spend most of the day idle.
+          - type: custom:layout-card
+            layout_type: custom:grid-layout
+            layout:
+              grid-template-columns: 1fr 1fr
+              grid-gap: 16px
+            cards:
+              - type: custom:mushroom-climate-card
+                entity: climate.living_room
+                name: Living Room
+                hvac_modes: [heat]
+                show_temperature_control: true
+                fill_container: true
+                tap_action: { action: more-info }
+              - type: custom:mushroom-climate-card
+                entity: climate.kitchen
+                name: Kitchen
+                hvac_modes: [heat]
+                show_temperature_control: true
+                fill_container: true
+                tap_action: { action: more-info }
+              - type: custom:mushroom-climate-card
+                entity: climate.hallway
+                name: Hallway
+                hvac_modes: [heat]
+                show_temperature_control: true
+                fill_container: true
+                tap_action: { action: more-info }
+              - type: custom:mushroom-climate-card
+                entity: climate.bedroom
+                name: Bedroom
+                hvac_modes: [heat]
+                show_temperature_control: true
+                fill_container: true
+                tap_action: { action: more-info }
+
+          # Whole-house actions. Confirmation dialogs on anything that
+          # touches every room — wall tablets collect accidental taps
+          # (cleaning, children, elbows).
+          - type: horizontal-stack
+            cards:
+              - type: custom:mushroom-template-card
+                primary: All 21°
+                secondary: Warm every room
+                icon: mdi:fire
+                icon_color: red
+                fill_container: true
+                card_mod: *wall_action
+                tap_action:
+                  action: call-service
+                  service: climate.set_temperature
+                  target:
+                    entity_id:
+                      - climate.living_room
+                      - climate.kitchen
+                      - climate.hallway
+                      - climate.bedroom
+                  data: { temperature: 21, hvac_mode: heat }
+                  confirmation: { text: "Set every room to 21°C?" }
+              - type: custom:mushroom-template-card
+                primary: All Frost
+                secondary: 5°C everywhere
+                icon: mdi:snowflake
+                icon_color: blue
+                fill_container: true
+                card_mod: *wall_action
+                tap_action:
+                  action: call-service
+                  service: climate.set_temperature
+                  target:
+                    entity_id:
+                      - climate.living_room
+                      - climate.kitchen
+                      - climate.hallway
+                      - climate.bedroom
+                  data: { temperature: 5, hvac_mode: heat }
+                  confirmation: { text: "Set all rooms to 5°C frost protection?" }
+
+  # ════════════════════════════════════════════════════════════════════
+  # LIGHTS — every light with full controls, plus the big off switch
+  # ════════════════════════════════════════════════════════════════════
+  - title: Lights
+    path: lights
+    type: panel
+    cards:
+      - type: custom:layout-card
+        layout_type: custom:grid-layout
+        layout:
+          grid-template-columns: 1fr
+          grid-gap: 14px
+          margin: 12px
+        cards:
+          - type: custom:mushroom-chips-card
+            alignment: center
+            card_mod: *wall_chips
+            chips: *tablet_nav
+
+          - type: custom:mushroom-light-card
+            entity: light.living_room
+            name: Living Room
+            show_brightness_control: true
+            show_color_temp_control: true
+            fill_container: true
+            card_mod: *wall_light
+          - type: custom:mushroom-light-card
+            entity: light.kitchen
+            name: Kitchen
+            show_brightness_control: true
+            fill_container: true
+            card_mod: *wall_light
+          - type: custom:mushroom-light-card
+            entity: light.hallway
+            name: Hallway
+            icon: mdi:ceiling-light-multiple
+            show_brightness_control: true
+            fill_container: true
+            card_mod: *wall_light
+          - type: custom:mushroom-light-card
+            entity: light.bedroom
+            name: Bedroom
+            icon: mdi:bed
+            show_brightness_control: true
+            show_color_temp_control: true
+            fill_container: true
+            card_mod: *wall_light
+          - type: custom:mushroom-entity-card
+            entity: switch.floor_lamp
+            name: Floor Lamp
+            icon: mdi:lamp
+            tap_action: { action: toggle }
+            fill_container: true
+
+          - type: custom:mushroom-template-card
+            primary: All Off
+            secondary: Every light in the house
+            icon: mdi:lightbulb-group-off
+            icon_color: grey
+            fill_container: true
+            card_mod: *wall_action
+            tap_action:
+              action: call-service
+              service: light.turn_off
+              target: { entity_id: all }
+              confirmation: { text: "Turn off every light?" }

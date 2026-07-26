@@ -1,0 +1,295 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Energy — Octopus Agile awareness (Home Assistant package)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Copy this file into /config/packages/ and make sure configuration.yaml
+# loads packages:
+#
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# Requires the HACS "Octopus Energy" integration (BottlecapDave) to be set
+# up first. Then rename the placeholder octopus_* entity ids below to your
+# own — see README.md ("Rename these") for how to find them.
+#
+# What you get:
+#   • Clean alias sensors over the integration's meter-ID entity ids
+#   • A rolling "cheapest 3-hour window" sensor computed from today's rates
+#   • Peak-rate warning + off-peak start notices via notify.notify
+#   • A 07:30 morning energy briefing (notification + optional TTS)
+# ═══════════════════════════════════════════════════════════════════════════
+
+template:
+  - sensor:
+      # ── Octopus aliases — clean names over the meter-ID sensors ──────────
+      # The integration names every entity after your meter serial + MPAN /
+      # MPRN, e.g. sensor.octopus_energy_electricity_ab123456_1234567890123_
+      # current_rate. Those ids change if you re-add the integration, swap
+      # meters, switch account, or move house — and every automation pointing
+      # at them silently breaks. Alias them ONCE here and point everything
+      # downstream (automations, dashboards, future components) at the alias.
+      # When the meter id changes you edit one line, not ten automations.
+      # The same pattern works for any dynamic-tariff integration, not just
+      # Octopus — keep the alias names as your stable contract.
+      - name: "Electricity Rate"
+        unique_id: energy_electricity_rate
+        unit_of_measurement: "£/kWh"
+        icon: mdi:flash
+        # No device_class here: "monetary" only accepts real currency units
+        # (GBP, EUR…) — on a per-kWh rate it makes HA nag in the logs.
+        state: "{{ states('sensor.octopus_energy_electricity_meter00serial_meter00point00number_current_rate') }}"
+        availability: "{{ has_value('sensor.octopus_energy_electricity_meter00serial_meter00point00number_current_rate') }}"
+
+      - name: "Electricity Rate Pence"
+        unique_id: energy_electricity_rate_pence
+        unit_of_measurement: "p/kWh"
+        icon: mdi:flash
+        # The integration reports £/kWh (0.35 = 35p) but people, dashboards
+        # and alert thresholds all think in pence. Convert exactly once here,
+        # so no downstream automation can ever get the classic ">0.35 or
+        # >35?" unit mismatch wrong.
+        state: >
+          {% set r = states('sensor.octopus_energy_electricity_meter00serial_meter00point00number_current_rate') | float(0) %}
+          {{ (r * 100) | round(1) }}
+        availability: "{{ has_value('sensor.octopus_energy_electricity_meter00serial_meter00point00number_current_rate') }}"
+
+      - name: "Electricity Previous Cost"
+        unique_id: energy_electricity_previous_cost
+        unit_of_measurement: "GBP"
+        device_class: monetary
+        icon: mdi:currency-gbp
+        # "Previous accumulative cost" = yesterday's total spend. Note that
+        # smart-meter consumption data flows through the national metering
+        # network with hours of lag — this often still reads unknown at
+        # breakfast time. Downstream consumers must degrade gracefully.
+        state: "{{ states('sensor.octopus_energy_electricity_meter00serial_meter00point00number_previous_accumulative_cost') }}"
+        availability: "{{ has_value('sensor.octopus_energy_electricity_meter00serial_meter00point00number_previous_accumulative_cost') }}"
+
+      - name: "Gas Rate"
+        unique_id: energy_gas_rate
+        unit_of_measurement: "£/kWh"
+        icon: mdi:fire
+        state: "{{ states('sensor.octopus_energy_gas_meter00serial_meter00point00number_current_rate') }}"
+        availability: "{{ has_value('sensor.octopus_energy_gas_meter00serial_meter00point00number_current_rate') }}"
+
+      - name: "Gas Previous Cost"
+        unique_id: energy_gas_previous_cost
+        unit_of_measurement: "GBP"
+        device_class: monetary
+        icon: mdi:currency-gbp
+        state: "{{ states('sensor.octopus_energy_gas_meter00serial_meter00point00number_previous_accumulative_cost') }}"
+        availability: "{{ has_value('sensor.octopus_energy_gas_meter00serial_meter00point00number_previous_accumulative_cost') }}"
+
+      # ── Cheapest 3-hour window ───────────────────────────────────────────
+      # Scans TODAY'S remaining half-hour Agile rates for the cheapest
+      # contiguous 3-hour block (6 × 30-min slots) and reports its start
+      # time, with `end` and `avg_rate` (pence) attributes. Drive "run the
+      # washer / dishwasher / charger in the cheap window" decisions off
+      # this instead of eyeballing the rate graph.
+      #
+      # How it works:
+      #   • The integration publishes the whole day's rate list on an EVENT
+      #     entity (event.*_current_day_rates), attribute `rates` — a list
+      #     of {start, end, value_inc_vat} dicts with real datetimes.
+      #   • Only future slots are considered (selectattr 'start' 'gt' now()),
+      #     so the window rolls forward through the day rather than telling
+      #     you about a bargain that ended at 04:00.
+      #   • A namespace() accumulator tracks the cheapest-total window as the
+      #     loop slides across the remaining slots.
+      #
+      # Why the same loop appears three times below: a template sensor's
+      # state and each attribute render independently — they cannot share a
+      # computed value. Ugly but harmless: renders are cheap, and the now()
+      # reference means it re-renders once a minute, which is exactly what
+      # keeps the window rolling forward.
+      #
+      # Known limit: late in the evening there are fewer than 6 future slots
+      # left today, so the state goes empty/unknown until tomorrow's rates
+      # load. Next-day Agile rates publish around 16:00 — extend this with
+      # the *_next_day_rates event if you want an overnight-aware version.
+      - name: "Cheapest 3h Window"
+        unique_id: energy_cheapest_3h_window
+        icon: mdi:clock-check
+        state: >
+          {% set rates = state_attr('event.octopus_energy_electricity_meter00serial_meter00point00number_current_day_rates', 'rates') %}
+          {% if rates %}
+          {% set ns = namespace(best_cost=999, best_start='', best_end='', best_avg=0) %}
+          {% set future = rates | selectattr('start', 'gt', now()) | list %}
+          {% set slots = 6 %}
+          {% for i in range(future | length - slots + 1) %}
+          {% set window = future[i:i+slots] %}
+          {% set cost = window | map(attribute='value_inc_vat') | sum %}
+          {% if cost < ns.best_cost %}
+          {% set ns.best_cost = cost %}
+          {% set ns.best_start = window[0].start.strftime('%H:%M') %}
+          {% set ns.best_end = window[-1].end.strftime('%H:%M') %}
+          {% set ns.best_avg = (cost / slots * 100) | round(1) %}
+          {% endif %}
+          {% endfor %}
+          {{ ns.best_start }}
+          {% else %}unknown{% endif %}
+        attributes:
+          end: >
+            {% set rates = state_attr('event.octopus_energy_electricity_meter00serial_meter00point00number_current_day_rates', 'rates') %}
+            {% if rates %}
+            {% set ns = namespace(best_cost=999, best_end='') %}
+            {% set future = rates | selectattr('start', 'gt', now()) | list %}
+            {% set slots = 6 %}
+            {% for i in range(future | length - slots + 1) %}
+            {% set window = future[i:i+slots] %}
+            {% set cost = window | map(attribute='value_inc_vat') | sum %}
+            {% if cost < ns.best_cost %}{% set ns.best_cost = cost %}{% set ns.best_end = window[-1].end.strftime('%H:%M') %}{% endif %}
+            {% endfor %}{{ ns.best_end }}{% else %}unknown{% endif %}
+          avg_rate: >
+            {% set rates = state_attr('event.octopus_energy_electricity_meter00serial_meter00point00number_current_day_rates', 'rates') %}
+            {% if rates %}
+            {% set ns = namespace(best_cost=999) %}
+            {% set future = rates | selectattr('start', 'gt', now()) | list %}
+            {% set slots = 6 %}
+            {% for i in range(future | length - slots + 1) %}
+            {% set window = future[i:i+slots] %}
+            {% set cost = window | map(attribute='value_inc_vat') | sum %}
+            {% if cost < ns.best_cost %}{% set ns.best_cost = cost %}{% endif %}
+            {% endfor %}{{ (ns.best_cost / slots * 100) | round(1) }}{% else %}unknown{% endif %}
+
+  - binary_sensor:
+      # Alias for the tariff's off-peak flag, for the same stable-contract
+      # reason as the sensors above. NB: the integration only creates the
+      # off_peak entity when the tariff actually defines an off-peak band —
+      # see README if yours doesn't have one.
+      - name: "Electricity Off Peak"
+        unique_id: energy_electricity_off_peak
+        icon: mdi:clock-outline
+        state: "{{ is_state('binary_sensor.octopus_energy_electricity_meter00serial_meter00point00number_off_peak', 'on') }}"
+        availability: "{{ has_value('binary_sensor.octopus_energy_electricity_meter00serial_meter00point00number_off_peak') }}"
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+input_number:
+  electricity_peak_alert_threshold:
+    name: "Electricity peak alert threshold"
+    min: 5
+    max: 100
+    step: 1
+    unit_of_measurement: "p/kWh"
+    icon: mdi:flash-alert
+    mode: box
+    # Deliberately NO `initial:` — HA re-applies `initial` on EVERY restart,
+    # silently clobbering whatever you set in the UI. Without it the helper
+    # restores its last value across restarts. On first creation it starts
+    # at `min`, so set it to 35 (or taste) once via Settings → Devices &
+    # Services → Helpers.
+
+input_boolean:
+  morning_briefing_tts:
+    name: "Morning briefing: speak aloud"
+    icon: mdi:bullhorn
+    # Off by default. The 07:30 briefing always arrives as a notification;
+    # flip this on to ALSO have it spoken on the announce speaker.
+
+# ── Automations ─────────────────────────────────────────────────────────────
+automation:
+  - id: energy_peak_rate_alert
+    alias: "Energy: peak rate alert"
+    description: >-
+      Warn when the electricity rate rises above the alert threshold
+      (35p/kWh is a sensible starting point on Agile).
+    mode: single
+    triggers:
+      # Triggers on the pence ALIAS compared against the pence helper — both
+      # sides in the same unit, so the £-vs-pence threshold bug can't happen.
+      - trigger: numeric_state
+        entity_id: sensor.electricity_rate_pence
+        above: input_number.electricity_peak_alert_threshold
+    conditions:
+      # Agile rates change every 30 minutes and can oscillate around any
+      # threshold all evening — each crossing re-fires a numeric_state
+      # trigger. Without a cooldown that's one notification per half-hour
+      # slot. Rate-limit to one alert per hour.
+      - condition: template
+        value_template: >-
+          {{ this.attributes.last_triggered is none
+             or (now() - this.attributes.last_triggered).total_seconds() > 3600 }}
+    actions:
+      - action: notify.notify
+        data:
+          title: "Electricity peak rate"
+          message: >-
+            Electricity is now {{ states('sensor.electricity_rate_pence') }}p/kWh,
+            above your {{ states('input_number.electricity_peak_alert_threshold') | int }}p
+            alert threshold. Avoid heavy loads if possible.
+
+  - id: energy_offpeak_start_notice
+    alias: "Energy: off-peak started"
+    description: Notify when off-peak electricity begins.
+    mode: single
+    triggers:
+      # `from: "off"` matters: without it, the sensor recovering from
+      # unavailable → on (integration reload, HA restart, cloud blip) also
+      # matches and fires phantom "off-peak started" notices at odd hours.
+      - trigger: state
+        entity_id: binary_sensor.electricity_off_peak
+        from: "off"
+        to: "on"
+    actions:
+      - action: notify.notify
+        data:
+          title: "Off-peak electricity"
+          message: >-
+            Off-peak electricity has started
+            ({{ states('sensor.electricity_rate_pence') }}p/kWh). Good time to
+            run the washer, dishwasher, or charge devices.
+
+  - id: energy_morning_briefing
+    alias: "Energy: morning briefing"
+    description: >-
+      07:30 energy summary — current rate, yesterday's cost, cheapest 3-hour
+      window — delivered as a notification, optionally spoken aloud.
+    mode: single
+    triggers:
+      - trigger: time
+        at: "07:30:00"
+    actions:
+      # Build the message once, deliver it twice (notify + optional TTS).
+      # Every line degrades gracefully: smart-meter cost data usually hasn't
+      # landed by 07:30, and sensors can be briefly unavailable after an
+      # overnight restart — a missing line beats a briefing that announces
+      # "unknown pounds".
+      - variables:
+          rate: "{{ states('sensor.electricity_rate_pence') }}"
+          cost: "{{ states('sensor.electricity_previous_cost') }}"
+          win_start: "{{ states('sensor.cheapest_3h_window') }}"
+          win_end: "{{ state_attr('sensor.cheapest_3h_window', 'end') }}"
+          win_avg: "{{ state_attr('sensor.cheapest_3h_window', 'avg_rate') }}"
+          briefing: >-
+            Good morning.
+            {%- if rate not in ['unknown', 'unavailable', ''] %}
+            Electricity is currently {{ rate }} pence per kilowatt hour.
+            {%- endif %}
+            {%- if cost not in ['unknown', 'unavailable', ''] %}
+            Yesterday's electricity cost {{ cost | float(0) | round(2) }} pounds.
+            {%- else %}
+            Yesterday's cost hasn't come through from the meter yet.
+            {%- endif %}
+            {%- if win_start not in ['unknown', 'unavailable', ''] %}
+            The cheapest three-hour window starts at {{ win_start }}
+            {%- if win_end and win_end not in ['unknown', 'unavailable'] %} and runs to {{ win_end }}{% endif %}
+            {%- if win_avg and win_avg not in ['unknown', 'unavailable'] %}, averaging {{ win_avg }} pence{% endif %}.
+            {%- endif %}
+      - action: notify.notify
+        data:
+          title: "Morning energy briefing"
+          message: "{{ briefing }}"
+      # Optional spoken version. Swap tts.home_assistant_cloud for your TTS
+      # entity (e.g. tts.google_translate_en_gb) and
+      # media_player.announce_speaker for a real speaker — see README.
+      - if:
+          - condition: state
+            entity_id: input_boolean.morning_briefing_tts
+            state: "on"
+        then:
+          - action: tts.speak
+            target:
+              entity_id: tts.home_assistant_cloud
+            data:
+              media_player_entity_id: media_player.announce_speaker
+              message: "{{ briefing }}"

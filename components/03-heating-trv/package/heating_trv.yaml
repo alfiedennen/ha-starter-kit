@@ -1,0 +1,557 @@
+# ════════════════════════════════════════════════════════════════════════════
+# Smart TRV heating — per-room schedules with forecast gating
+# ha-starter-kit · components/03-heating-trv
+#
+# Copy this file to /config/packages/heating_trv.yaml, rename the climate.*
+# entities to match your TRVs (see README rename table), set the helper
+# values, and you have per-room heating schedules that manage themselves
+# year-round.
+#
+# Two design decisions carry this whole package — read them before "fixing"
+# anything that looks odd:
+#
+# 1. WARM-WINDOW TARGETS ARE DELIBERATELY HIGH (22°C is not a typo).
+#    A radiator-mounted TRV measures the air right next to a hot pipe, so
+#    once the radiator warms up its internal sensor reads roughly 3°C above
+#    the true room temperature. Ask a TRV for 19°C and the valve shuts when
+#    the ROOM is only ~16°C. A 22°C target lands the actual room at about
+#    19°C. Calibrate to taste — but expect to set targets well above the
+#    room temperature you actually want. (If your TRV supports an external
+#    temperature sensor input, feeding it a real room sensor removes this
+#    offset entirely — see README.)
+#
+# 2. EVERY WARM WINDOW IS FORECAST-GATED; THERE IS NO SEASONAL TOGGLE.
+#    Each "warm this room now" automation only fires when the forecast
+#    outside temperature for the hour that matters is BELOW
+#    input_number.heating_outside_threshold (suggested: 8°C). In mild
+#    weather the warm windows silently don't run; on a cold snap they come
+#    straight back — all year round, with nothing to remember to flip in
+#    spring or autumn. The 5°C "off" setbacks are deliberately UNgated:
+#    they always run, so the frost-protection floor holds regardless of
+#    what the forecast (or the weather integration) is doing.
+#
+# Fail-safe when unconfigured: a freshly-copied package heats NOTHING.
+# A brand-new input_number reads its minimum (0°C), so no forecast gate can
+# pass until you set the threshold; the ungated 5°C setbacks still run.
+# Wrong-way failure is impossible — an unconfigured kit fails COLD, not hot.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ─── Helpers ────────────────────────────────────────────────────────────────
+# No `initial:` values anywhere, on purpose. `initial:` re-applies at EVERY
+# Home Assistant restart, silently reverting any tuning you did from the
+# dashboard. Instead, set these once via Settings → Devices & Services →
+# Helpers (suggested values in the comments + README) and they persist.
+
+input_number:
+  # The single knob for the whole package. Warm windows only fire when the
+  # forecast outside temp for the relevant hour is BELOW this. Suggested
+  # starting value: 8°C. Raise it if the house feels cold on marginal
+  # mornings; lower it if the heating runs on days it needn't.
+  heating_outside_threshold:
+    name: Heating Outside Threshold
+    icon: mdi:thermometer-low
+    min: 0
+    max: 20
+    step: 0.5
+    unit_of_measurement: "°C"
+
+input_datetime:
+  # Suggested: 05:45 (weekday pre-heat so the room is warm by desk time).
+  heating_office_start:
+    name: Office Heating Start
+    icon: mdi:radiator
+    has_date: false
+    has_time: true
+  # Suggested: 17:00 (end of the working day — office back to frost floor).
+  heating_office_end:
+    name: Office Heating End
+    icon: mdi:radiator-off
+    has_date: false
+    has_time: true
+  # Suggested: 18:00 (kitchen + living room for the evening meal window).
+  heating_evening_start:
+    name: Evening Heating Start
+    icon: mdi:radiator
+    has_date: false
+    has_time: true
+  # Suggested: 20:00.
+  heating_evening_end:
+    name: Evening Heating End
+    icon: mdi:radiator-off
+    has_date: false
+    has_time: true
+  # Suggested: 21:30 (warm the bedroom before bed).
+  heating_bedroom_evening:
+    name: Bedroom Evening Start
+    icon: mdi:radiator
+    has_date: false
+    has_time: true
+  # Suggested: 05:00 (warm before waking; hard-off at 06:00 below).
+  heating_bedroom_morning:
+    name: Bedroom Morning Start
+    icon: mdi:radiator
+    has_date: false
+    has_time: true
+
+input_boolean:
+  # Guards the boost script's snapshot (see script.heating_boost). Do not
+  # toggle this by hand — the script owns it.
+  heating_boost_active:
+    name: Heating Boost Active
+    icon: mdi:radiator
+
+# ─── Forecast sensors ───────────────────────────────────────────────────────
+# Three trigger-based template sensors, one per hour the schedules care
+# about:
+#   0600 → the morning pre-heats (bedroom, office, alarm-driven)
+#   1900 → the evening kitchen + living room window (fires ~18:00)
+#   2200 → the bedroom evening window (fires ~21:30; the LATER hour is used
+#          deliberately — bedroom warmth is about overnight comfort, so the
+#          bedtime-relevant temperature matters more than the early-evening
+#          one)
+#
+# They refresh every 30 minutes (and at startup) by calling
+# weather.get_forecasts — note the PLURAL. The singular weather.get_forecast
+# was removed from Home Assistant; if you find older examples using it, they
+# no longer work.
+#
+# Fallback: if the hourly lookup comes back empty or the weather integration
+# is down, each sensor falls back to the CURRENT outside temperature rather
+# than going 'unknown' — a forecast outage degrades gracefully instead of
+# silently disabling (or enabling) the heating.
+template:
+  - triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: time_pattern
+        minutes: "/30"
+    actions:
+      - action: weather.get_forecasts # PLURAL — the singular was removed
+        target:
+          entity_id: weather.forecast_home
+        data:
+          type: hourly
+        response_variable: fc
+    sensor:
+      - name: "Forecast Outside Temp 0600"
+        unique_id: forecast_outside_temp_0600
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state: >
+          {% set hours = fc['weather.forecast_home'].forecast
+             if fc is defined and fc.get('weather.forecast_home') else [] %}
+          {% set ns = namespace(t=none) %}
+          {% for f in hours %}
+            {% set dt = f.datetime | as_datetime | as_local %}
+            {% if ns.t is none and dt > now() and dt.hour == 6 %}
+              {% set ns.t = f.temperature %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.t if ns.t is not none
+             else state_attr('weather.forecast_home', 'temperature') }}
+      - name: "Forecast Outside Temp 1900"
+        unique_id: forecast_outside_temp_1900
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state: >
+          {% set hours = fc['weather.forecast_home'].forecast
+             if fc is defined and fc.get('weather.forecast_home') else [] %}
+          {% set ns = namespace(t=none) %}
+          {% for f in hours %}
+            {% set dt = f.datetime | as_datetime | as_local %}
+            {% if ns.t is none and dt > now() and dt.hour == 19 %}
+              {% set ns.t = f.temperature %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.t if ns.t is not none
+             else state_attr('weather.forecast_home', 'temperature') }}
+      - name: "Forecast Outside Temp 2200"
+        unique_id: forecast_outside_temp_2200
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state: >
+          {% set hours = fc['weather.forecast_home'].forecast
+             if fc is defined and fc.get('weather.forecast_home') else [] %}
+          {% set ns = namespace(t=none) %}
+          {% for f in hours %}
+            {% set dt = f.datetime | as_datetime | as_local %}
+            {% if ns.t is none and dt > now() and dt.hour == 22 %}
+              {% set ns.t = f.temperature %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.t if ns.t is not none
+             else state_attr('weather.forecast_home', 'temperature') }}
+
+# ─── Boost script ───────────────────────────────────────────────────────────
+# One-hour on-demand boost: snapshots the current setpoints, warms the main
+# rooms, then RESTORES what was there before — it does not blindly drop
+# everything to frost afterwards, so a boost during a scheduled warm window
+# hands back to the schedule instead of cancelling it.
+#
+# `mode: restart` means pressing boost again mid-boost simply restarts the
+# one-hour clock. The input_boolean guard exists precisely because of that:
+# without it, a re-trigger would re-snapshot the ALREADY-BOOSTED setpoints
+# and the "restore" at the end would restore the boost temperature forever.
+# Snapshot only happens on the first run; re-runs just extend the hour.
+#
+# Boost target is 21°C, a notch below the scheduled 22°C — boost is an
+# immediate-comfort override for rooms you're already in, not a from-cold
+# pre-heat, so it doesn't need the full sensor-offset headroom.
+script:
+  heating_boost:
+    alias: Heating Boost 1hr
+    icon: mdi:radiator
+    mode: restart
+    sequence:
+      - if:
+          - condition: state
+            entity_id: input_boolean.heating_boost_active
+            state: "off"
+        then:
+          # scene.create with snapshot_entities captures each TRV's current
+          # temperature target AND hvac_mode; scene.turn_on below puts both
+          # back exactly as they were.
+          - action: scene.create
+            data:
+              scene_id: before_heating_boost
+              snapshot_entities:
+                - climate.office_trv
+                - climate.living_room_trv
+                - climate.kitchen_trv
+                - climate.hallway_trv
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.heating_boost_active
+      - action: climate.set_temperature
+        target:
+          entity_id:
+            - climate.office_trv
+            - climate.living_room_trv
+            - climate.kitchen_trv
+            - climate.hallway_trv
+        data:
+          temperature: 21
+          hvac_mode: heat
+      # continue_on_error so a broken/missing TTS setup can never abort the
+      # script — if this step killed the run, the delay + restore below would
+      # never happen and the boost would stay on indefinitely.
+      - action: tts.speak
+        continue_on_error: true
+        target:
+          entity_id: tts.home_assistant_cloud
+        data:
+          media_player_entity_id: media_player.announce_speaker
+          message: "Heating boost activated. All rooms warming for one hour."
+      - delay:
+          hours: 1
+      - action: scene.turn_on
+        target:
+          entity_id: scene.before_heating_boost
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.heating_boost_active
+      - action: tts.speak
+        continue_on_error: true
+        target:
+          entity_id: tts.home_assistant_cloud
+        data:
+          media_player_entity_id: media_player.announce_speaker
+          message: "Heating boost ended. Schedules back in charge."
+
+# ─── Schedules ──────────────────────────────────────────────────────────────
+# Pattern throughout: warm windows are forecast-gated (design decision 2 in
+# the header); every "off" automation sets 5°C with hvac_mode: heat — that
+# is "off with a frost floor", NOT hvac_mode: off. Keeping the mode on heat
+# leaves the valve free to open if the room ever approaches freezing;
+# hvac_mode: off would disable the valve entirely.
+automation:
+  # ── Office (weekdays) ──
+  - id: heating_weekday_office_preheat
+    alias: "Heating: Office pre-heat (weekdays)"
+    description: >-
+      Pre-heat the office before work starts. Target 22°C to overcome the
+      TRV pipe-heat sensor offset (~3°C).
+    triggers:
+      - trigger: time
+        at: input_datetime.heating_office_start
+    conditions:
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+      # Only pre-heat if it will actually be cold at 06:00.
+      - condition: template
+        value_template: >-
+          {{ states('sensor.forecast_outside_temp_0600') | float(20)
+             < states('input_number.heating_outside_threshold') | float(8) }}
+    actions:
+      - action: climate.set_temperature
+        target:
+          entity_id: climate.office_trv
+        data:
+          temperature: 22
+          hvac_mode: heat
+
+  - id: heating_weekday_office_settled
+    alias: "Heating: Office settled (08:00 weekdays)"
+    description: "Re-assert the work-day temperature once the day has begun."
+    triggers:
+      - trigger: time
+        at: "08:00:00"
+    conditions:
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+      # This fires at 08:00, so it gates on the CURRENT outside temperature —
+      # the 06:00 forecast sensor has already rolled over to TOMORROW's 06:00
+      # by now and would be answering the wrong question. It also acts as a
+      # second chance: if the pre-heat skipped because the forecast said mild
+      # but the morning turned out cold, this catches it with real data.
+      - condition: template
+        value_template: >-
+          {{ state_attr('weather.forecast_home', 'temperature') | float(20)
+             < states('input_number.heating_outside_threshold') | float(8) }}
+    actions:
+      - action: climate.set_temperature
+        target:
+          entity_id: climate.office_trv
+        data:
+          temperature: 22
+          hvac_mode: heat
+
+  - id: heating_weekday_office_off
+    alias: "Heating: Office off (weekdays)"
+    description: "End of the working day — office back to the frost floor. UNgated."
+    triggers:
+      - trigger: time
+        at: input_datetime.heating_office_end
+    conditions:
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+    actions:
+      - action: climate.set_temperature
+        target:
+          entity_id: climate.office_trv
+        data:
+          temperature: 5
+          hvac_mode: heat
+
+  # ── Kitchen + living room evening (daily) ──
+  - id: heating_evening_kitchen_living
+    alias: "Heating: Kitchen + living room evening (daily)"
+    description: >-
+      Evening meal window. Target 22°C to overcome the TRV sensor offset.
+    triggers:
+      - trigger: time
+        at: input_datetime.heating_evening_start
+    conditions:
+      # Only warm the evening rooms if it will be cold at 19:00.
+      - condition: template
+        value_template: >-
+          {{ states('sensor.forecast_outside_temp_1900') | float(20)
+             < states('input_number.heating_outside_threshold') | float(8) }}
+    actions:
+      - action: climate.set_temperature
+        target:
+          entity_id:
+            - climate.kitchen_trv
+            - climate.living_room_trv
+        data:
+          temperature: 22
+          hvac_mode: heat
+
+  - id: heating_evening_kitchen_living_off
+    alias: "Heating: Kitchen + living room evening off (daily)"
+    description: "Evening window closes. Back to the frost floor. UNgated."
+    triggers:
+      - trigger: time
+        at: input_datetime.heating_evening_end
+    actions:
+      - action: climate.set_temperature
+        target:
+          entity_id:
+            - climate.kitchen_trv
+            - climate.living_room_trv
+        data:
+          temperature: 5
+          hvac_mode: heat
+
+  # ── Bedroom (daily) ──
+  - id: heating_bedroom_morning
+    alias: "Heating: Bedroom morning"
+    description: >-
+      Warm the bedroom before waking. Target 22°C to overcome the TRV sensor
+      offset.
+    triggers:
+      - trigger: time
+        at: input_datetime.heating_bedroom_morning
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ states('sensor.forecast_outside_temp_0600') | float(20)
+             < states('input_number.heating_outside_threshold') | float(8) }}
+    actions:
+      - action: climate.set_temperature
+        target:
+          entity_id: climate.bedroom_trv
+        data:
+          temperature: 22
+          hvac_mode: heat
+
+  - id: heating_bedroom_morning_off
+    alias: "Heating: Bedroom morning off (06:00)"
+    description: "Bedroom off after the morning warm-up. UNgated."
+    triggers:
+      - trigger: time
+        at: "06:00:00"
+    actions:
+      - action: climate.set_temperature
+        target:
+          entity_id: climate.bedroom_trv
+        data:
+          temperature: 5
+          hvac_mode: heat
+
+  - id: heating_bedroom_evening
+    alias: "Heating: Bedroom evening"
+    description: >-
+      Warm the bedroom before bed. Target 22°C to overcome the TRV sensor
+      offset.
+    triggers:
+      - trigger: time
+        at: input_datetime.heating_bedroom_evening
+    conditions:
+      # Bedroom warmth is about overnight comfort, so this gates on the LATER
+      # 22:00 forecast (bedtime-relevant) rather than the 19:00 evening one.
+      - condition: template
+        value_template: >-
+          {{ states('sensor.forecast_outside_temp_2200') | float(20)
+             < states('input_number.heating_outside_threshold') | float(8) }}
+    actions:
+      - action: climate.set_temperature
+        target:
+          entity_id: climate.bedroom_trv
+        data:
+          temperature: 22
+          hvac_mode: heat
+
+  - id: heating_bedroom_evening_off
+    alias: "Heating: Bedroom evening off (22:30)"
+    description: "Bedroom off after the pre-bed warm-up. UNgated."
+    triggers:
+      - trigger: time
+        at: "22:30:00"
+    actions:
+      - action: climate.set_temperature
+        target:
+          entity_id: climate.bedroom_trv
+        data:
+          temperature: 5
+          hvac_mode: heat
+
+  # ── Whole-house night setback ──
+  - id: heating_night
+    alias: "Heating: Night setback (22:00)"
+    description: >-
+      Safety net — everything except the bedroom to the 5°C frost floor.
+      UNgated by design: this must run every night regardless of forecast so
+      nothing is ever left heating overnight by a missed "off" window.
+    triggers:
+      - trigger: time
+        at: "22:00:00"
+    actions:
+      - action: climate.set_temperature
+        target:
+          entity_id:
+            - climate.office_trv
+            - climate.living_room_trv
+            - climate.kitchen_trv
+            - climate.hallway_trv
+            # Add further rooms here as you add TRVs — every TRV in the house
+            # belongs in this list EXCEPT the bedroom.
+            # NOTE: climate.bedroom_trv is deliberately excluded — its own
+            # evening window runs 21:30→22:30 and would be cut short by this
+            # setback. It handles its own off at 22:30 above.
+        data:
+          temperature: 5
+          hvac_mode: heat
+
+  # ── Alarm-driven pre-heat (optional — Android companion app only) ──
+  # Both automations fire 20 minutes before the phone's next alarm, if — and
+  # only if — a valid alarm is set. No alarm set = no dynamic pre-heat; the
+  # fixed-time schedules above are the fallback. The pleasant side effect:
+  # weekend lie-ins and holidays get no pre-heat automatically, because you
+  # didn't set an alarm.
+  #
+  # Requires the "Next alarm" sensor from the Home Assistant companion app
+  # (Android only — enable it under Settings → Companion app → Manage
+  # sensors). If you don't have it, delete these two automations — although
+  # they are harmless as-is: an absent sensor reads 'unknown' and the
+  # trigger template then never fires.
+  #
+  # Safe to overlap with the fixed-time pre-heats — both idempotently set the
+  # same target, so the worst case is setting the same temperature twice a
+  # few minutes apart.
+  #
+  # The template trigger fires within a 60-second window around
+  # (alarm − 20 min); `mode: single` + `max_exceeded: silent` stop the
+  # template re-evaluating into a double-fire inside that window.
+  - id: heating_bedroom_preheat_alarm
+    alias: "Heating: Bedroom pre-heat (20 min before phone alarm)"
+    description: >-
+      Dynamic bedroom pre-heat based on the phone's next alarm. Warm by wake
+      time whenever an alarm is set — no alarm, no pre-heat.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: template
+        value_template: >
+          {% set na = states('sensor.your_phone_next_alarm') %}
+          {% if na in ['unknown','unavailable','None',''] %}
+            false
+          {% else %}
+            {% set target = (na | as_datetime) - timedelta(minutes=20) %}
+            {{ now() >= target and now() < target + timedelta(minutes=1) }}
+          {% endif %}
+    conditions:
+      # Skip the alarm pre-heat on a mild morning.
+      - condition: template
+        value_template: >-
+          {{ states('sensor.forecast_outside_temp_0600') | float(20)
+             < states('input_number.heating_outside_threshold') | float(8) }}
+    actions:
+      - action: climate.set_temperature
+        target:
+          entity_id: climate.bedroom_trv
+        data:
+          temperature: 22
+          hvac_mode: heat
+
+  - id: heating_office_preheat_alarm
+    alias: "Heating: Office pre-heat (20 min before phone alarm, weekdays)"
+    description: >-
+      Dynamic office pre-heat, weekdays only. Fires on whatever morning alarm
+      is set. No alarm, no pre-heat — the office stays cold for holidays.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: template
+        value_template: >
+          {% set na = states('sensor.your_phone_next_alarm') %}
+          {% if na in ['unknown','unavailable','None',''] %}
+            false
+          {% else %}
+            {% set target = (na | as_datetime) - timedelta(minutes=20) %}
+            {{ now() >= target and now() < target + timedelta(minutes=1) }}
+          {% endif %}
+    conditions:
+      - condition: time
+        weekday: [mon, tue, wed, thu, fri]
+      - condition: template
+        value_template: >-
+          {{ states('sensor.forecast_outside_temp_0600') | float(20)
+             < states('input_number.heating_outside_threshold') | float(8) }}
+    actions:
+      - action: climate.set_temperature
+        target:
+          entity_id: climate.office_trv
+        data:
+          temperature: 22
+          hvac_mode: heat

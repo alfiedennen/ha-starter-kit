@@ -1,0 +1,278 @@
+# ════════════════════════════════════════════════════════════════════
+# Scenes extras — controller buttons + voice phrases + cinema auto-scene
+# ════════════════════════════════════════════════════════════════════
+# Home Assistant "package" file. Drop into /config/packages/ (the kit's
+# base config loads packages via
+#   homeassistant: packages: !include_dir_named packages
+# ), rename the placeholder entities (see README), then reload automations.
+#
+# Companion file: ../scenes.yaml holds the four scene definitions
+# (warm_evening / bright / movie / relax) — merge that into your
+# /config/scenes.yaml first, or these automations will fire at nothing.
+#
+# Note: automations defined in a package show up in the UI but are
+# read-only there ("editable only in YAML") — that's expected, not broken.
+
+# ── Helpers ──────────────────────────────────────────────────────────
+input_boolean:
+  # Master toggle for the cinema auto-scene. Flip off when you want the
+  # TV on WITHOUT the room dimming itself (ironing, background telly,
+  # kids' cartoons at breakfast). A master toggle beats disabling the
+  # automation because it's dashboard-friendly and survives reloads.
+  cinema_auto_scene:
+    name: Cinema auto-scene
+    icon: mdi:movie-open-cog
+
+automation:
+  # ══════════════════════════════════════════════════════════════════
+  # SCENE CONTROLLER — Sonoff SNZB-01M 4-button remote (via Zigbee2MQTT)
+  # ══════════════════════════════════════════════════════════════════
+  # Each button fires on EITHER single OR long press. The SNZB-01M
+  # firmware emits distinct `single_button_X` and `long_button_X`
+  # payloads depending on press style, and in practice people long-press
+  # by reflex — if only `single` is wired, the device LOOKS broken half
+  # the time. Wiring both gestures to the same action fixes that.
+  # Double-press payloads (`double_button_X`) are left unassigned:
+  # that's 4 spare slots if you want per-room light toggles later.
+  #
+  # To diagnose unresponsive presses, watch what Zigbee2MQTT actually
+  # publishes (from the machine running your MQTT broker):
+  #   mosquitto_sub -h 127.0.0.1 -u <mqtt_user> -P <mqtt_password> \
+  #                 -t "zigbee2mqtt/Scene Controller/action" -v
+  # The full payload set on current firmware: single_button_X,
+  # double_button_X, long_button_X for X in {1,2,3,4}.
+  #
+  # GOTCHA: the MQTT topic contains the device's Zigbee2MQTT *friendly
+  # name*. Rename the device in Z2M and every trigger below silently
+  # stops matching — update the topic strings at the same time.
+  - id: scene_controller_b1_warm_evening
+    alias: "Scene controller: Button 1 → Warm Evening"
+    triggers:
+      - trigger: mqtt
+        topic: "zigbee2mqtt/Scene Controller/action"
+        payload: "single_button_1"
+      - trigger: mqtt
+        topic: "zigbee2mqtt/Scene Controller/action"
+        payload: "long_button_1"
+    actions:
+      - action: scene.turn_on
+        target:
+          entity_id: scene.warm_evening
+        data:
+          # Short transition makes a button press feel deliberate rather
+          # than jarring; keep it ≤1s so the button still feels instant.
+          transition: 1
+
+  - id: scene_controller_b2_bright
+    alias: "Scene controller: Button 2 → Bright"
+    triggers:
+      - trigger: mqtt
+        topic: "zigbee2mqtt/Scene Controller/action"
+        payload: "single_button_2"
+      - trigger: mqtt
+        topic: "zigbee2mqtt/Scene Controller/action"
+        payload: "long_button_2"
+    actions:
+      - action: scene.turn_on
+        target:
+          entity_id: scene.bright
+        data:
+          transition: 1
+
+  - id: scene_controller_b3_movie
+    alias: "Scene controller: Button 3 → Movie"
+    triggers:
+      - trigger: mqtt
+        topic: "zigbee2mqtt/Scene Controller/action"
+        payload: "single_button_3"
+      - trigger: mqtt
+        topic: "zigbee2mqtt/Scene Controller/action"
+        payload: "long_button_3"
+    actions:
+      - action: scene.turn_on
+        target:
+          entity_id: scene.movie
+        data:
+          transition: 1
+
+  - id: scene_controller_b4_relax
+    alias: "Scene controller: Button 4 → Relax"
+    triggers:
+      - trigger: mqtt
+        topic: "zigbee2mqtt/Scene Controller/action"
+        payload: "single_button_4"
+      - trigger: mqtt
+        topic: "zigbee2mqtt/Scene Controller/action"
+        payload: "long_button_4"
+    actions:
+      - action: scene.turn_on
+        target:
+          entity_id: scene.relax
+        data:
+          transition: 1
+    # Alternative wiring: a button can toggle a room instead of setting a
+    # scene — swap the action for:
+    #   - action: light.toggle
+    #     target:
+    #       entity_id: light.living_room_pendant
+
+  # ══════════════════════════════════════════════════════════════════
+  # VOICE SCENE PHRASES — natural language → scene.* (local, zero cloud)
+  # ══════════════════════════════════════════════════════════════════
+  # Conversation triggers are matched by HA Assist's LOCAL sentence
+  # matcher — no cloud, no LLM, works with the typed Assist dialog and
+  # any voice pipeline. Because they're matched BEFORE any fallback
+  # conversation agent, they're deterministic and instant.
+  #
+  # HA conversation pattern syntax:
+  #   [word]      = optional word
+  #   (a|b|c)     = required, one of these
+  #   [(a|b)]     = optional, one of these
+  # Single automation, multiple `id`-labelled triggers, choose-block
+  # dispatch — add a new scene by adding one trigger + one choose branch.
+  #
+  # HA replies "Done" by default when a conversation trigger matches; add
+  # a `set_conversation_response` action to a branch if you want a custom
+  # (or empty, i.e. silent) reply.
+  - id: voice_scene_lighting
+    alias: "Voice: lighting scene phrases → scene.*"
+    description: >
+      Flexible phrasing for the 4 lighting scenes — warm / bright / movie /
+      relax. Catches variants like "lights to bright please", "warm lights",
+      "movie lights", "relaxing lights", "chill lights", "set warm", etc.
+    mode: parallel
+    max: 4
+    triggers:
+      # ── WARM ────────────────────────────────────────────────────
+      - trigger: conversation
+        id: warm
+        command:
+          - "[(set|turn|put|switch)] [the] [(lights|lighting|light)] [to] warm [(scene|mode|please)]"
+          - "warm [the] [(lights|lighting|light|scene|mode)] [please]"
+          - "[set] warm [(scene|mode)] [please]"
+          - "warm please"
+          - "[(set|turn|put)] warm evening [(scene|mode|lights|lighting)] [please]"
+      # ── BRIGHT ──────────────────────────────────────────────────
+      - trigger: conversation
+        id: bright
+        command:
+          - "[(set|turn|put|switch)] [the] [(lights|lighting|light)] [to] bright [(scene|mode|please)]"
+          - "bright [the] [(lights|lighting|light|scene|mode)] [please]"
+          - "[set] bright [(scene|mode)] [please]"
+          - "bright please"
+          - "lights up [please]"
+          - "all the lights [please]"
+      # ── MOVIE ───────────────────────────────────────────────────
+      - trigger: conversation
+        id: movie
+        command:
+          - "[(set|turn|put|switch)] [the] [(lights|lighting|light)] [to] movie [(scene|mode|please)]"
+          - "movie [the] [(lights|lighting|light|scene|mode)] [please]"
+          - "[set] movie [(scene|mode)] [please]"
+          - "movie please"
+          - "[set] (cinema|film) [(mode|scene|lights|lighting)] [please]"
+      # ── RELAX (and variants) ────────────────────────────────────
+      - trigger: conversation
+        id: relax
+        command:
+          - "[(set|turn|put|switch)] [the] [(lights|lighting|light)] [to] (relax|relaxed|relaxing|chill|chilled|cosy|cozy) [(scene|mode|please)]"
+          - "(relax|relaxed|relaxing|chill|chilled|cosy|cozy) [the] [(lights|lighting|light|scene|mode)] [please]"
+          - "[set] (relax|relaxed|relaxing|chill|chilled|cosy|cozy) [(scene|mode)] [please]"
+          - "(relax|chill|cosy|cozy) please"
+    actions:
+      - choose:
+          - conditions:
+              - condition: trigger
+                id: warm
+            sequence:
+              - action: scene.turn_on
+                target:
+                  entity_id: scene.warm_evening
+          - conditions:
+              - condition: trigger
+                id: bright
+            sequence:
+              - action: scene.turn_on
+                target:
+                  entity_id: scene.bright
+          - conditions:
+              - condition: trigger
+                id: movie
+            sequence:
+              - action: scene.turn_on
+                target:
+                  entity_id: scene.movie
+          - conditions:
+              - condition: trigger
+                id: relax
+            sequence:
+              - action: scene.turn_on
+                target:
+                  entity_id: scene.relax
+
+  # ══════════════════════════════════════════════════════════════════
+  # CINEMA AUTO-SCENE — TV playing + someone in the room → scene.movie
+  # ══════════════════════════════════════════════════════════════════
+  # When the TV has been playing AND the living-room presence sensor has
+  # held for a stable 2 minutes, fire the movie scene. The 2-minute hold
+  # prevents accidental fires from briefly checking what's on — a raw
+  # `to: playing` trigger dims the room every time someone flicks
+  # through the guide. Some TVs also report "playing" while sitting in
+  # their app-launcher menus, which the hold time absorbs.
+  #
+  # Presence source: any occupancy binary_sensor (mmWave holds through
+  # stillness far better than PIR, which times out on motionless
+  # film-watchers). No presence sensor? Delete the second trigger and
+  # second condition and let TV state alone drive it.
+  - id: cinema_auto_scene
+    alias: "Cinema: TV + presence → scene.movie"
+    description: >
+      Auto-fire the movie scene when someone settles in front of a playing
+      TV for 2+ minutes. Master toggle: input_boolean.cinema_auto_scene.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: state
+        entity_id: media_player.living_room_tv
+        to: "playing"
+        for: "00:02:00"
+      - trigger: state
+        entity_id: binary_sensor.living_room_presence
+        to: "on"
+        for: "00:02:00"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.cinema_auto_scene
+        state: "on"
+      - condition: state
+        entity_id: media_player.living_room_tv
+        state: "playing"
+      - condition: state
+        entity_id: binary_sensor.living_room_presence
+        state: "on"
+      # Don't re-fire within an hour of the last run — avoids stomping on
+      # a manual override (someone turned the lights back up mid-film for
+      # a reason; the automation shouldn't fight them).
+      # GOTCHA: `this` refers to the automation's own state object. The
+      # obvious alternative — hardcoding state_attr('automation.<slug>',
+      # 'last_triggered') — silently breaks when the alias is renamed,
+      # because the automation's entity_id is derived from its alias.
+      - condition: template
+        value_template: >
+          {% set last = this.attributes.last_triggered %}
+          {{ last is none or (now() - last).total_seconds() > 3600 }}
+    actions:
+      - action: scene.turn_on
+        target:
+          entity_id: scene.movie
+        data:
+          # Slow fade — an auto-scene should feel ambient, not startling.
+          transition: 3
+      # Optional: nudge the room's radiator for a long sit. Uncomment if
+      # you have a smart TRV (see the heating component):
+      # - action: climate.set_temperature
+      #   target:
+      #     entity_id: climate.living_room_trv
+      #   data:
+      #     temperature: 21
+      #     hvac_mode: heat

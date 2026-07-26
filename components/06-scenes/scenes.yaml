@@ -1,0 +1,112 @@
+# ════════════════════════════════════════════════════════════════════
+# Starter scenes — warm_evening / bright / movie / relax
+# ════════════════════════════════════════════════════════════════════
+# Copy (or merge) this into /config/scenes.yaml — the file the default
+# HA config already loads via `scene: !include scenes.yaml`.
+#
+# Why scenes.yaml and not the package file: the UI scene editor
+# (Settings → Automations & Scenes → Scenes) ONLY edits scenes.yaml.
+# Scenes defined inside a package are valid but invisible to the UI
+# editor, so keeping them here means you can tweak brightness/colour
+# from the dashboard later without touching YAML.
+#
+# Placeholder entities (rename to match your own — see README table):
+#   light.living_room_pendant   main ceiling light (colour-temp capable)
+#   light.living_room_lamp      table lamp (RGB + colour-temp)
+#   light.reading_lamp          floor / reading lamp
+#   switch.floor_lamp           a "dumb" lamp on a smart plug — on/off only;
+#                               scenes can include switches but can only set
+#                               state, never brightness or colour
+#
+# Colour-temperature notes (calibrated by living with these, not theory):
+#   - 2200 K is proper evening warm — most "warm white" presets are 2700 K,
+#     which still reads as white. 2200 K is candle-adjacent and is the
+#     floor of most colour-temp bulbs.
+#   - 5000 K at full brightness is task lighting: cleaning, finding
+#     things, reading small print. Higher (6500 K) starts to feel clinical.
+#   - The relax scene uses rgb_color instead of colour temp because a deep
+#     firelight amber sits BELOW the 2200 K floor of the colour-temp range —
+#     RGB is the only way to get there. Requires RGB-capable bulbs; a
+#     colour-temp-only bulb in an rgb_color scene will error or ignore it.
+#   - Use color_temp_kelvin (kelvin, higher = cooler). The old mired-based
+#     color_temp field still works but is deprecated and inverted
+#     (higher = warmer), which is a recurring source of confusion.
+
+- id: warm_evening
+  name: Warm Evening
+  icon: mdi:lamp
+  entities:
+    light.living_room_lamp:
+      state: "on"
+      brightness: 150
+      color_temp_kelvin: 2200
+    light.living_room_pendant:
+      state: "on"
+      brightness: 120
+      color_temp_kelvin: 2200
+    light.reading_lamp:
+      state: "on"
+      brightness: 120
+      color_temp_kelvin: 2200
+    switch.floor_lamp:
+      state: "on"
+
+- id: bright
+  name: Bright
+  icon: mdi:white-balance-sunny
+  entities:
+    light.living_room_lamp:
+      state: "on"
+      brightness: 255
+      color_temp_kelvin: 5000
+    light.living_room_pendant:
+      state: "on"
+      brightness: 255
+      color_temp_kelvin: 5000
+    light.reading_lamp:
+      state: "on"
+      brightness: 255
+      color_temp_kelvin: 5000
+    switch.floor_lamp:
+      state: "on"
+
+# Movie deliberately keeps ONE dim warm anchor light rather than total
+# darkness — a pitch-black room causes eye strain against a bright screen,
+# and someone will inevitably need to find a drink without breaking the
+# mood. Brightness 30 (of 255) is "visible but ignorable".
+- id: movie
+  name: Movie
+  icon: mdi:movie-open
+  entities:
+    light.living_room_lamp:
+      state: "off"
+    light.living_room_pendant:
+      state: "on"
+      brightness: 30
+      color_temp_kelvin: 2200
+    light.reading_lamp:
+      state: "off"
+    switch.floor_lamp:
+      state: "on"
+
+# Relax: RGB firelight ambers, each lamp a slightly different hue so the
+# room doesn't look flat. Values are subtle variations on [255, 147, 41]
+# (classic "incandescent" RGB) — copy the pattern, vary per lamp.
+- id: relax
+  name: Relax
+  icon: mdi:sofa
+  entities:
+    light.living_room_lamp:
+      state: "on"
+      brightness: 80
+      rgb_color: [255, 147, 41]
+    light.living_room_pendant:
+      state: "on"
+      brightness: 80
+      rgb_color: [255, 160, 60]
+    light.reading_lamp:
+      state: "on"
+      brightness: 80
+      rgb_color: [255, 140, 45]
+    switch.floor_lamp:
+      state: "on"

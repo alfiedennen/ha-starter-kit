@@ -1,0 +1,160 @@
+# Action button — a single physical button that triggers any Home
+# Assistant automation, with instant local audio feedback.
+#
+# Reference hardware: M5StickC Plus2 (ESP32-Pico-V3-02, USB-C, built-in
+# button + passive piezo + battery). Any classic-ESP32 dev board with a
+# momentary button and a passive piezo works too — just adjust the pin
+# map below. The Plus2's screen is deliberately left uninitialised:
+# feedback is buzzer-only, which is simpler, survives a broken screen,
+# and works identically on screenless boards.
+#
+# Behaviour:
+#   - Press the button → binary_sensor fires in HA; the device beeps
+#     once LOCALLY for instant "I heard you" feedback (it does not wait
+#     for the network round-trip — see README).
+#   - An HA automation (package/action-button.yaml) catches the press
+#     and performs the action.
+#   - HA then calls back into the device via either the `beep_success`
+#     (rising chirp) or `beep_error` (descending sad-trombone) action,
+#     so you can HEAR whether the action actually worked without
+#     looking at a phone or a dashboard.
+#
+# Pin map (M5StickC Plus2):
+#   - GPIO37 = Button A (the big front button), active-LOW, external pullup
+#   - GPIO39 = Button B (side button), unused here
+#   - GPIO2  = Buzzer (passive piezo — needs PWM, driven via LEDC + rtttl)
+#   - GPIO4  = Power-hold (must be HIGH to keep the board alive on battery)
+#   - GPIO19 = Red LED (unused — kept off)
+#
+# Power: assume USB-powered always-on wherever the button lives. The
+# GPIO4 power-hold is set anyway so the device survives a brief unplug
+# if it happens to be running off its internal battery.
+
+substitutions:
+  name: action-button
+  friendly_name: "Action Button"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  # Keep entity ids stable — a MAC suffix in the name would change every
+  # entity id if you ever swap the board.
+  name_add_mac_suffix: false
+  min_version: 2024.11.0
+  on_boot:
+    priority: 200
+    then:
+      # Hold the power latch HIGH so the device stays on if it is ever
+      # running off battery (brief USB unplug, power blip, etc).
+      # Harmless on boards without a power-hold pin — remove if your
+      # board uses GPIO4 for something else.
+      - output.turn_on: power_hold
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: INFO
+  # Disable serial logging — frees the UART and avoids noise on boards
+  # where the USB-serial chip shares pins with peripherals.
+  baud_rate: 0
+
+api:
+  encryption:
+    key: !secret action_button_api_key
+  # Two callable actions HA can invoke AFTER the automation's action
+  # resolves — this is what closes the feedback loop: the local press
+  # beep says "heard you", these say "it actually worked" / "it failed".
+  #
+  # NOTE: HA blocks these callbacks by default. The ESPHome integration
+  # has a per-device "Allow the device to perform Home Assistant
+  # actions" option that defaults OFF; until you enable it, calls to
+  # esphome.action_button_beep_* return 403 and the button stays
+  # silent on success/failure. See README → Gotchas.
+  actions:
+    - action: beep_success
+      then:
+        # Rising two-tone chirp = the action worked
+        - rtttl.play: "ok:d=4,o=6,b=300:16e,16g"
+    - action: beep_error
+      then:
+        # Descending sad-trombone = the action failed
+        - rtttl.play: "err:d=4,o=5,b=200:16g,16e,16c"
+
+ota:
+  - platform: esphome
+    password: !secret action_button_ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Fallback hotspot so the device stays reachable if your WiFi
+  # credentials ever change.
+  ap:
+    ssid: "${name}"
+    password: !secret action_button_ota_password
+
+captive_portal:
+
+# ── Outputs ───────────────────────────────────────────────────────────
+output:
+  # Power-hold pin — HIGH keeps the M5StickC Plus2 alive on battery.
+  - platform: gpio
+    pin: GPIO4
+    id: power_hold
+
+  # Buzzer driven via LEDC PWM. A PASSIVE piezo needs a PWM waveform to
+  # make sound (that is what LEDC + rtttl provide). If you wire up an
+  # ACTIVE buzzer instead, it only needs on/off — use a plain gpio
+  # switch and replace the rtttl.play calls with short switch pulses.
+  - platform: ledc
+    pin: GPIO2
+    id: buzzer_out
+
+# ── Buzzer / tones ────────────────────────────────────────────────────
+# rtttl plays old-school ringtone strings — short, expressive, and easy
+# to tweak (change the notes after the last colon).
+rtttl:
+  output: buzzer_out
+
+# ── Button ────────────────────────────────────────────────────────────
+binary_sensor:
+  - platform: gpio
+    # `name` is concatenated with the device friendly_name in HA, so use
+    # a SHORT suffix here ("Press") — a full name would produce the ugly
+    # doubled entity id `binary_sensor.action_button_action_button`.
+    name: "Press"
+    id: btn_a
+    pin:
+      # GPIO34-39 on classic ESP32 are INPUT-ONLY and have NO internal
+      # pullups. The M5StickC Plus2 provides an external pullup on the
+      # button line, so `pullup: true` must be OMITTED here — ESPHome
+      # validation rejects it on these pins. If you build with a bare
+      # ESP32 + your own button, either wire an external pullup to a
+      # 34-39 pin, or use any other input pin (e.g. GPIO25) with
+      # `mode: { input: true, pullup: true }`.
+      number: GPIO37
+      inverted: true
+      mode:
+        input: true
+    filters:
+      # Hardware debounce — ignore noisy contact edges shorter than 30ms.
+      - delayed_on: 30ms
+    on_press:
+      then:
+        # Local "I heard you" beep — fires IMMEDIATELY on-device, before
+        # any network traffic. ~80ms blip. Without this, a WiFi hiccup
+        # or slow automation makes the button feel dead and people press
+        # it again (see README → Gotchas on double-fires).
+        - rtttl.play: "tap:d=4,o=6,b=300:32c"
+
+# ── Diagnostics ───────────────────────────────────────────────────────
+sensor:
+  - platform: uptime
+    name: "Uptime"
+    update_interval: 60s
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s

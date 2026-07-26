@@ -1,0 +1,20 @@
+# Never commit real secrets — only the .example files belong in git
+secrets.yaml
+**/secrets.yaml
+.env
+*.env
+
+# Home Assistant runtime artefacts (if you point HA at a clone of this repo)
+.storage/
+.cloud/
+deps/
+tts/
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.log.*
+
+# OS noise
+.DS_Store
+Thumbs.db

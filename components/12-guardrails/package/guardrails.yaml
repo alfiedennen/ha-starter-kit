@@ -1,0 +1,226 @@
+# ═══════════════════════════════════════════════════════════════════════
+# GUARDRAILS — safety rails + monitoring
+#
+# Three independent rails, one file:
+#
+#   1. Protected-entity guard — a critical plug (server, router, NAS,
+#      aquarium pump…) that no automation, script, or voice agent may
+#      ever switch off. Programmatic turn-offs are reverted within ~1s
+#      and you get a notification naming the offending context.
+#   2. Repairs monitor — push a notification the moment Home Assistant
+#      registers a new Repair issue. Silent integration failures (OAuth
+#      expiry, deprecations, config errors) otherwise fester invisibly
+#      for weeks: the integration still shows "loaded", commands appear
+#      to be accepted, and nothing works.
+#   3. Low-battery sweep — one daily digest of every battery-class
+#      sensor below your threshold, instead of per-device nag spam.
+#
+# All notifications go to `notify.notify`. Swap in your real notifier
+# (Telegram, companion app) — see the README.
+# ═══════════════════════════════════════════════════════════════════════
+
+input_number:
+  # Threshold for the daily low-battery sweep.
+  # `initial:` is deliberate: it re-asserts 20% on every restart, so the
+  # rail behaves deterministically. If you'd rather have UI changes
+  # persist across restarts, delete the `initial:` line.
+  low_battery_threshold:
+    name: Low battery threshold
+    min: 5
+    max: 50
+    step: 5
+    initial: 20
+    unit_of_measurement: "%"
+    icon: mdi:battery-alert
+
+automation:
+  # ═════════════════════════════════════════════════════════════════════
+  # 1. PROTECTED-ENTITY GUARD
+  #
+  # switch.critical_plug must not be turned off by any automation,
+  # script, or conversation agent. Sooner or later an intent matcher
+  # will greedy-match "turn off the … plug", or a well-meaning "all off"
+  # scene will sweep it up — and kill whatever it powers mid-session.
+  #
+  # Guard logic:
+  #   - Trigger: switch.critical_plug → off
+  #   - Condition: the state change has a parent context
+  #     (`trigger.to_state.context.parent_id is not none`). A parent
+  #     context means the change was CAUSED BY something else — an
+  #     automation, a script, or a voice/conversation agent. A direct
+  #     UI tap or a physical button press has parent_id = None, so the
+  #     guard ignores those and you can still turn the plug off by hand.
+  #   - Action: turn it straight back on + notify with the offender's
+  #     context id (search it in Settings → System → Logs, or match it
+  #     against the logbook, to find which automation fired).
+  #
+  # IMPORTANT — the ~1s power cut still happens. This guard is the
+  # SECOND layer. The first layer is removing the entity from voice
+  # assistants entirely: Settings → Voice assistants → Expose → untick
+  # this entity (see README). Do both.
+  #
+  # To genuinely turn the plug off programmatically one day (e.g. a
+  # graceful-shutdown flow), disable this automation in the UI first,
+  # do the work, then re-enable it. And never, ever add an automation
+  # or script that calls switch.turn_off on the protected entity —
+  # the guard reverts it, but the brief cut still kills running kit.
+  # ═════════════════════════════════════════════════════════════════════
+  - id: guardrails_critical_plug_revert_unauthorised_off
+    alias: "Guardrails: revert unauthorised critical-plug off"
+    description: >-
+      If the critical plug goes off and the change came from an
+      automation/script/agent (parent_id set), turn it straight back on
+      and notify. UI taps and physical button presses are exempt.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: state
+        entity_id: switch.critical_plug
+        to: "off"
+    conditions:
+      # Programmatic change → parent_id is populated. Manual change → null.
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state.context.parent_id is not none }}
+    actions:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.critical_plug
+      - action: notify.notify
+        data:
+          title: "Blocked: something switched off the critical plug"
+          message: >-
+            A programmatic action tried to turn off the critical plug.
+            Reverted. Offending parent context id:
+            {{ trigger.to_state.context.parent_id }}
+      # Companion-app extras, if your notifier is notify.mobile_app_*:
+      # uncomment and merge into the data block above.
+      #     data:
+      #       channel: System
+      #       tag: critical_plug_guard
+      #       importance: high
+      #       notification_icon: mdi:shield-alert
+      - action: logbook.log
+        continue_on_error: true
+        data:
+          name: Guardrails
+          message: >-
+            Reverted unauthorised critical-plug off
+            (parent context {{ trigger.to_state.context.parent_id }})
+
+  # ═════════════════════════════════════════════════════════════════════
+  # 2. HA REPAIRS MONITOR — notify on new issues
+  #
+  # Repairs land in Settings → Repairs, a screen nobody visits. A
+  # classic failure mode: a lock integration's OAuth silently expires,
+  # the Repair sits there for two weeks, every remote unlock quietly
+  # no-ops at the cloud boundary — and it's only discovered when
+  # someone is standing outside a locked door. Both config entries show
+  # "loaded" the whole time, so nothing looks broken anywhere else.
+  #
+  # Event payload (homeassistant.helpers.issue_registry):
+  #   action:   "create" | "update" | "remove"
+  #   domain:   string (integration name)
+  #   issue_id: string (integration-internal stable id)
+  # We filter for action=create — update/remove fire constantly as
+  # issues resolve and re-evaluate, and are pure noise.
+  #
+  # mode: queued (max 20) because Repairs arrive in bursts — an HA
+  # upgrade can register half a dozen deprecation issues in one second,
+  # and `mode: single` would silently drop all but the first.
+  # ═════════════════════════════════════════════════════════════════════
+  - id: guardrails_repairs_monitor_new_issue
+    alias: "Guardrails: HA Repairs — notify on new issue"
+    description: >-
+      Push a notification whenever HA registers a new Repair, so
+      integration auth-expiry / deprecation / config-error issues are
+      caught at create time instead of festering invisibly.
+    mode: queued
+    max: 20
+    triggers:
+      - trigger: event
+        event_type: repairs_issue_registry_updated
+        event_data:
+          action: create
+    actions:
+      - action: notify.notify
+        data:
+          title: "New Home Assistant Repair"
+          message: >-
+            {{ trigger.event.data.domain }} —
+            {{ trigger.event.data.issue_id }}.
+            Open Settings → Repairs to investigate.
+      - action: logbook.log
+        continue_on_error: true
+        data:
+          name: Guardrails
+          message: >-
+            New repair: {{ trigger.event.data.domain }} /
+            {{ trigger.event.data.issue_id }}
+
+  # ═════════════════════════════════════════════════════════════════════
+  # 3. LOW-BATTERY SWEEP — one daily digest
+  #
+  # Walks every sensor with device_class: battery plus every
+  # binary_sensor with device_class: battery (those report on = low)
+  # and sends ONE digest listing anything under the threshold.
+  #
+  # Template notes (each one is load-bearing):
+  #   - `is_number` filters out `unavailable` / `unknown` states, which
+  #     battery sensors produce constantly — sleepy Zigbee devices and
+  #     phone-app sensors legitimately read unknown between reports,
+  #     and comparing those against the threshold would false-positive.
+  #   - `float(101)` as the fallback means "if it somehow still doesn't
+  #     parse, treat it as full" — fail quiet, not noisy.
+  #   - The digest is built as a joined STRING, not a Jinja list.
+  #     HA converts template output back to native types via literal
+  #     eval, and device names containing an apostrophe break that
+  #     round-trip, silently turning your list into a character count.
+  #   - `ignore_list` is for devices that report battery but you don't
+  #     care about (a spare remote in a drawer, a device that lies
+  #     about its level). Edit it in place.
+  # ═════════════════════════════════════════════════════════════════════
+  - id: guardrails_low_battery_daily_digest
+    alias: "Guardrails: low-battery daily digest"
+    description: >-
+      Daily sweep of all battery device_class sensors; one digest
+      notification listing everything below the threshold.
+    mode: single
+    triggers:
+      # Mid-morning so the notification never lands overnight.
+      - trigger: time
+        at: "10:00:00"
+    variables:
+      threshold: "{{ states('input_number.low_battery_threshold') | float(20) }}"
+      # Battery entities to skip entirely — edit to taste.
+      ignore_list:
+        - sensor.example_spare_remote_battery
+      low_report: >-
+        {% set ns = namespace(items=[]) %}
+        {% for s in states.sensor
+             | selectattr('attributes.device_class', 'defined')
+             | selectattr('attributes.device_class', 'eq', 'battery')
+             | rejectattr('entity_id', 'in', ignore_list) %}
+          {% if s.state | is_number and s.state | float(101) < threshold %}
+            {% set ns.items = ns.items + [s.name ~ ': ' ~ s.state ~ '%'] %}
+          {% endif %}
+        {% endfor %}
+        {% for b in states.binary_sensor
+             | selectattr('attributes.device_class', 'defined')
+             | selectattr('attributes.device_class', 'eq', 'battery')
+             | rejectattr('entity_id', 'in', ignore_list) %}
+          {% if b.state == 'on' %}
+            {% set ns.items = ns.items + [b.name ~ ': reports low'] %}
+          {% endif %}
+        {% endfor %}
+        {{ ns.items | join('\n') }}
+    conditions:
+      # Only notify when something is actually low — silence is the
+      # normal, healthy state.
+      - condition: template
+        value_template: "{{ low_report | trim | length > 0 }}"
+    actions:
+      - action: notify.notify
+        data:
+          title: "Low batteries"
+          message: "{{ low_report }}"

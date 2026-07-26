@@ -1,0 +1,214 @@
+# Warm Studio — an editorial dark theme for Home Assistant.
+#
+# Palette: warm off-black surfaces, parchment text, amber accent.
+# Typography: a four-font system (Newsreader body / Instrument Serif display /
+# IBM Plex Sans captions / JetBrains Mono code), loaded at runtime by
+# /local/studio-fonts.js — see this component's README for the wiring.
+#
+# Two themes are defined in this file:
+#   • warm_studio_dark — flat, always-dark palette. Use this everywhere.
+#   • warm_studio      — a "modes" wrapper whose light AND dark branches both
+#                        alias the same dark tokens. A modes theme only
+#                        engages the branch matching the viewing user's
+#                        light/dark profile setting — a wall tablet or kiosk
+#                        account left on the default (light) mode silently
+#                        misses a dark-only modes theme. The flat variant has
+#                        no such dependency; the wrapper exists for anything
+#                        that must reference a modes-style theme.
+#
+# TECHNIQUE — single-source token block via a YAML anchor:
+# The whole palette lives exactly ONCE, under warm_studio_dark, anchored as
+# &studio_dark. Every other variant (the modes wrapper, and optionally a
+# theme literally named "default" — see the commented block at the bottom)
+# merges it with `<<: *studio_dark`. Change a colour in one place and every
+# variant follows. This works because HA parses the themes file as plain YAML
+# before registering theme names, so anchors/merges are resolved for free.
+
+warm_studio_dark: &studio_dark
+  # ── surface ───────────────────────────────────────────────────────────
+  # Warm off-black, NOT pure #000 — see README for why. Cards sit one step
+  # lighter so elevation stays legible without shadows.
+  primary-background-color: "#1a1814"
+  secondary-background-color: "#232019"
+  card-background-color: "#232019"
+  ha-card-background: "#232019"
+  divider-color: "#2a261e"
+
+  # ── text ──────────────────────────────────────────────────────────────
+  # Parchment rather than white: full-white text on a dark ground halates
+  # (glows) on OLED and high-contrast panels; a warm near-white reads calmer
+  # at identical legibility.
+  primary-text-color: "#e6dcc8"
+  secondary-text-color: "#b3a890"
+  disabled-text-color: "#6e6553"
+  text-primary-color: "#e6dcc8"
+
+  # ── accent (warm amber — the signature colour) ────────────────────────
+  primary-color: "#c08a4a"
+  accent-color: "#c08a4a"
+
+  # ── state colours ─────────────────────────────────────────────────────
+  # Warm-tinted replacements for HA's stock neon states. Stock green/red/
+  # amber (#22c55e / #ef4444 / #f59e0b) scream against a warm palette; these
+  # keep the same semantic distance (success / warning / error / info remain
+  # clearly distinguishable from each other) while sitting in the palette.
+  state-icon-active-color: "#c08a4a"
+  paper-item-icon-active-color: "#c08a4a"
+  paper-item-icon-color: "#b3a890"
+  state-icon-color: "#b3a890"
+  switch-checked-color: "#c08a4a"
+  switch-checked-button-color: "#c08a4a"
+  switch-checked-track-color: "#8a5e2e"
+  switch-unchecked-button-color: "#6e6553"
+  switch-unchecked-track-color: "#2a261e"
+  success-color: "#88a55c"   # warm sage (replaces neon green)
+  warning-color: "#d39833"   # deeper warm gold
+  error-color: "#c84e3e"     # warm rust red
+  info-color: "#7a8a96"      # cool grey-blue counterpoint
+
+  # ── card chrome (crisp, editorial — no rounded pills, subtle warm rule) ─
+  # 4px radius + 1px hairline border + NO box-shadow: reads as ruled print,
+  # and shadow-free cards are cheaper to composite on low-power tablets.
+  ha-card-border-radius: "4px"
+  ha-card-border-color: "#2a261e"
+  ha-card-border-width: "1px"
+  ha-card-box-shadow: "none"
+
+  # ── layout gaps ───────────────────────────────────────────────────────
+  sections-column-gap: "8px"
+  sections-row-gap: "8px"
+  grid-card-gap: "8px"
+
+  # ── header ────────────────────────────────────────────────────────────
+  app-header-background-color: "#1a1814"
+  app-header-text-color: "#e6dcc8"
+  app-header-edit-background-color: "#232019"
+
+  # ── sidebar ───────────────────────────────────────────────────────────
+  sidebar-background-color: "#1a1814"
+  sidebar-text-color: "#e6dcc8"
+  sidebar-icon-color: "#b3a890"
+  sidebar-selected-background-color: "#232019"
+  sidebar-selected-text-color: "#c08a4a"
+  sidebar-selected-icon-color: "#c08a4a"
+
+  # ── sliders + paper widgets ───────────────────────────────────────────
+  paper-slider-active-color: "#c08a4a"
+  paper-slider-knob-color: "#c08a4a"
+  paper-slider-knob-start-color: "#c08a4a"
+  paper-slider-pin-color: "#c08a4a"
+  paper-slider-secondary-color: "#8a5e2e"
+  paper-slider-container-color: "#2a261e"
+  paper-listbox-color: "#e6dcc8"
+  paper-listbox-background-color: "#232019"
+  paper-tabs-selection-bar-color: "#c08a4a"
+
+  # ── more-info dialogs / popups ────────────────────────────────────────
+  ha-dialog-title-text-color: "#e6dcc8"
+  mdc-dialog-content-ink-color: "#e6dcc8"
+  mdc-text-field-fill-color: "#1a1814"
+  mdc-text-field-ink-color: "#e6dcc8"
+  mdc-text-field-label-ink-color: "#b3a890"
+  mdc-select-fill-color: "#1a1814"
+  mdc-select-ink-color: "#e6dcc8"
+
+  # ── mushroom (HACS card set) ──────────────────────────────────────────
+  # Harmless if mushroom isn't installed — unknown CSS variables are simply
+  # never read. Included so mushroom chips/cards match the moment they land.
+  mush-chip-border-radius: "4px"
+  mush-card-border-radius: "4px"
+  mush-chip-spacing: "6px"
+  mush-rgb-state-light: "192, 138, 74"   # accent as an rgb triplet
+  mush-rgb-state-switch: "192, 138, 74"
+  mush-rgb-state-fan: "192, 138, 74"
+  mush-rgb-state-cover: "192, 138, 74"
+
+  # ── calendar (native HA calendar + atomic-calendar-revive) ────────────
+  calendar-background-color: "#232019"
+  fc-button-bg-color: "#c08a4a"
+  fc-button-active-bg-color: "#8a5e2e"
+  fc-button-border-color: "#c08a4a"
+  fc-event-bg-color: "#c08a4a"
+  fc-event-border-color: "#8a5e2e"
+  fc-event-text-color: "#1a1814"   # dark text on amber event blocks reads better than light
+  fc-today-bg-color: "#2a261e"
+  fc-border-color: "#2a261e"
+  fc-neutral-bg-color: "#232019"
+  fc-list-event-hover-bg-color: "#2a261e"
+  fc-theme-standard-border-color: "#2a261e"
+  fc-page-bg-color: "#1a1814"
+  fc-non-business-color: "#15110d"
+
+  # ── label badges (entity badges in the dashboard) ─────────────────────
+  label-badge-text-color: "#e6dcc8"
+  label-badge-background-color: "#232019"
+  label-badge-red: "#c84e3e"
+  label-badge-green: "#88a55c"
+  label-badge-blue: "#7a8a96"
+  label-badge-yellow: "#d39833"
+  label-badge-grey: "#6e6553"
+
+  # ── code / pre blocks ─────────────────────────────────────────────────
+  markdown-code-background-color: "#1a1814"
+
+  # ────────────────────────────────────────────────────────────────────────
+  # TYPOGRAPHY — the four-font system
+  # Requires /local/studio-fonts.js to load the Google Fonts at runtime.
+  # Every stack carries system fallbacks, so if the webfonts never load
+  # (offline LAN, ad-blocker, Google unreachable) nothing visibly breaks —
+  # you just get the nearest system serif/sans/mono instead.
+  # ────────────────────────────────────────────────────────────────────────
+
+  # Body / UI default — Newsreader serif
+  primary-font-family: 'Newsreader, "Iowan Old Style", Georgia, serif'
+  paper-font-common-base_-_font-family: 'Newsreader, "Iowan Old Style", Georgia, serif'
+  paper-font-common-code_-_font-family: 'JetBrains Mono, ui-monospace, "SFMono-Regular", Menlo, monospace'
+  paper-font-body1_-_font-family: 'Newsreader, "Iowan Old Style", Georgia, serif'
+  paper-font-body2_-_font-family: 'Newsreader, "Iowan Old Style", Georgia, serif'
+  paper-font-subhead_-_font-family: 'Newsreader, "Iowan Old Style", Georgia, serif'
+
+  # Display / headlines — Instrument Serif
+  paper-font-headline_-_font-family: 'Instrument Serif, "Times New Roman", serif'
+  paper-font-display1_-_font-family: 'Instrument Serif, "Times New Roman", serif'
+  paper-font-display2_-_font-family: 'Instrument Serif, "Times New Roman", serif'
+  paper-font-display3_-_font-family: 'Instrument Serif, "Times New Roman", serif'
+  paper-font-display4_-_font-family: 'Instrument Serif, "Times New Roman", serif'
+  paper-font-title_-_font-family: 'Instrument Serif, "Times New Roman", serif'
+
+  # Caption / labels / buttons — IBM Plex Sans
+  paper-font-caption_-_font-family: 'IBM Plex Sans, "Helvetica Neue", system-ui, sans-serif'
+  paper-font-button_-_font-family: 'IBM Plex Sans, "Helvetica Neue", system-ui, sans-serif'
+  paper-font-menu_-_font-family: 'IBM Plex Sans, "Helvetica Neue", system-ui, sans-serif'
+  mdc-typography-button-font-family: 'IBM Plex Sans, "Helvetica Neue", system-ui, sans-serif'
+  mdc-typography-overline-font-family: 'IBM Plex Sans, "Helvetica Neue", system-ui, sans-serif'
+
+  # Code / mono — JetBrains Mono
+  code-font-family: 'JetBrains Mono, ui-monospace, "SFMono-Regular", Menlo, monospace'
+  paper-font-code1_-_font-family: 'JetBrains Mono, ui-monospace, "SFMono-Regular", Menlo, monospace'
+  paper-font-code2_-_font-family: 'JetBrains Mono, ui-monospace, "SFMono-Regular", Menlo, monospace'
+
+# ────────────────────────────────────────────────────────────────────────────
+# Modes-wrapper variant — both branches alias the same dark token block.
+# Use this only where a modes-style theme is required; prefer the flat
+# warm_studio_dark for kiosks and wall tablets (see file header for why).
+# ────────────────────────────────────────────────────────────────────────────
+
+warm_studio:
+  modes:
+    dark:
+      <<: *studio_dark
+    light:
+      <<: *studio_dark
+
+# ────────────────────────────────────────────────────────────────────────────
+# OPTIONAL — make this the system-wide default.
+# HA's built-in fallback theme is literally named "default". Defining a theme
+# with that name overrides it: every user and dashboard that has NOT
+# explicitly chosen a theme adopts this palette. Explicit per-dashboard /
+# per-user theme choices still win. Uncomment to enable; to roll back,
+# re-comment and call the frontend.reload_themes service (or just pick a
+# different theme in your user profile — instant, no restart).
+# ────────────────────────────────────────────────────────────────────────────
+
+# default:
+#   <<: *studio_dark

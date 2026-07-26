@@ -1,0 +1,334 @@
+# ═════════════════════════════════════════════════════════════════════
+# PRESENCE-DRIVEN ROOM LIGHTING (mmWave) — Home Assistant package
+# ═════════════════════════════════════════════════════════════════════
+# Three exemplar rooms, each a different pattern:
+#
+#   HALLWAY  — dimmable lights, time-of-day brightness bands
+#              (bright in the evening, dim amber late at night)
+#   KITCHEN  — non-dimmable wall relays, simple on/off with a longer
+#              off-delay and a PIR re-entry trigger
+#   BATHROOM — lights + extractor fan on one switched circuit, with a
+#              humidity-spike shower detector and a run-on timer
+#
+# Every room is gated by its own "auto" input_boolean so manual control
+# can always win — flip the toggle off and the room is yours.
+#
+# Copy this file to /config/packages/ (the kit's base config loads
+# packages via `homeassistant: packages: !include_dir_named packages`),
+# rename the placeholder entities to your own (see README), then
+# restart Home Assistant. A plain automation-reload is NOT enough the
+# first time — the input_booleans and timer below only get created on
+# a full config load.
+# ═════════════════════════════════════════════════════════════════════
+
+input_boolean:
+  hallway_presence_auto:
+    name: Hallway auto (presence-driven)
+    icon: mdi:motion-sensor
+    # `initial: true` means auto mode SELF-HEALS on every restart —
+    # even if you toggled it off yesterday. Deliberate: a forgotten
+    # "off" otherwise leaves the room dumb forever. If you'd rather
+    # the toggle remember its state across restarts, delete the
+    # `initial:` line (HA then restores the last state).
+    initial: true
+  kitchen_presence_auto:
+    name: Kitchen auto (presence-driven)
+    icon: mdi:motion-sensor
+    initial: true
+  bathroom_presence_auto:
+    name: Bathroom auto (presence-driven)
+    icon: mdi:motion-sensor
+    initial: true
+
+timer:
+  bathroom_shower:
+    duration: "00:20:00"
+    icon: mdi:shower
+    # `restore: true` so the timer survives a Home Assistant restart.
+    # Without it, a restart mid-shower silently discards the timer —
+    # `timer.finished` never fires and the fan stays on FOREVER (the
+    # absence automation defers to the timer, and the timer is gone).
+    restore: true
+
+automation:
+  # ═══════════════════════════════════════════════════════════════════
+  # HALLWAY — dimmable lights with time-of-day brightness bands
+  # ═══════════════════════════════════════════════════════════════════
+  # Transit space: nobody lingers, so a short off-delay is fine. The
+  # two on-automations differ only in their time window and light
+  # settings — add more bands the same way if you want them.
+
+  - id: presence_hallway_on_evening
+    alias: "Hallway: auto-on BRIGHT (19:00-22:30)"
+    description: >
+      Evening bright — normal transit lighting while the house is awake.
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.hallway_presence
+        to: "on"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.hallway_presence_auto
+        state: "on"
+      - condition: time
+        after: "19:00:00"
+        before: "22:30:00"
+    actions:
+      - action: light.turn_on
+        target:
+          entity_id: light.hallway_lights
+        data:
+          brightness_pct: 80
+          color_temp_kelvin: 2700
+    mode: single
+
+  - id: presence_hallway_on_latenight
+    alias: "Hallway: auto-on DIM AMBER (22:30-06:00)"
+    description: >
+      Late-night / early-morning dim amber — just enough to see by
+      without retinal blast at 3am. 20% brightness + 2200K (as warm as
+      most bulbs go). HA's time condition wraps midnight correctly when
+      `after` is later than `before`.
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.hallway_presence
+        to: "on"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.hallway_presence_auto
+        state: "on"
+      - condition: time
+        after: "22:30:00"
+        before: "06:00:00" # wraps midnight
+    actions:
+      - action: light.turn_on
+        target:
+          entity_id: light.hallway_lights
+        data:
+          brightness_pct: 20
+          color_temp_kelvin: 2200
+    mode: single
+
+  - id: presence_hallway_off
+    alias: "Hallway: auto-off 10s after absent (19:00-06:00)"
+    description: >
+      Short off-delay suits a transit space. NOTE: the sensor's own
+      internal absence delay (often ~10s, configurable on most mmWave
+      sensors) STACKS with the `for:` here — total time-to-dark is the
+      sum of both. Tune the sensor first, then this.
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.hallway_presence
+        to: "off"
+        for: "00:00:10"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.hallway_presence_auto
+        state: "on"
+      - condition: time
+        after: "19:00:00"
+        before: "06:00:00"
+    actions:
+      - action: light.turn_off
+        target:
+          entity_id: light.hallway_lights
+    mode: single
+
+  # ═══════════════════════════════════════════════════════════════════
+  # KITCHEN — non-dimmable wall relays, simple on/off
+  # ═══════════════════════════════════════════════════════════════════
+  # Target is a switch.* (wall relays behind the existing switches),
+  # not a light.* — so no brightness bands here; it's on or off.
+  #
+  # Behaviour:
+  #   - Active window: evenings only (19:00-23:00). Between 23:00 and
+  #     06:00 NEITHER the on- nor the off-automation fires — the
+  #     kitchen is purely manual at night. Walking in for a glass of
+  #     water at midnight shouldn't blast the room with every light;
+  #     and if you DO flip them on manually at 23:30, they stay on
+  #     until you flip them off. Fighting the user overnight is worse
+  #     than leaving a light on.
+  #   - Off: presence clear for 60s. The sensor itself adds its own
+  #     internal absence delay on top, so real-world time-to-dark is
+  #     longer. 60s tolerates brief pauses (stirring a pot) without
+  #     letting pet traffic keep the room lit for whole empty stretches.
+
+  - id: presence_kitchen_on
+    alias: "Kitchen: auto-on (19:00-23:00 only, NEVER overnight)"
+    description: >
+      Two triggers:
+        - presence off→on: normal entry from outside the room
+        - PIR/motion fires (fast edge): RE-ENTRY while mmWave occupancy
+          is still latched from before — e.g. you turn the lights off
+          manually, step out briefly, step back in. The occupancy
+          sensor never dropped, so it can't re-trigger; the PIR pulse
+          catches it. If your sensor has no separate motion/PIR entity,
+          delete that trigger — you just lose the quick-re-entry case.
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.kitchen_presence
+        to: "on"
+      - trigger: state
+        entity_id: binary_sensor.kitchen_motion
+        to: "on"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.kitchen_presence_auto
+        state: "on"
+      - condition: time
+        after: "19:00:00"
+        before: "23:00:00"
+    actions:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.kitchen_lights
+    mode: single
+
+  - id: presence_kitchen_off
+    alias: "Kitchen: auto-off 60s after absent (19:00-23:00 only)"
+    description: >
+      Secondary guard: also require the PIR/motion entity to be off
+      when the timer elapses — some sensors occasionally report
+      "presence off + motion still detecting" (rare but real), and we
+      shouldn't cut the lights on someone the PIR can still see.
+      Trade-off accepted: if cooking involves standing dead-still at
+      the hob for over a minute, the lights may cut. Step towards the
+      sensor to retrigger, or lengthen the `for:` below.
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.kitchen_presence
+        to: "off"
+        for: "00:01:00"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.kitchen_presence_auto
+        state: "on"
+      - condition: time
+        after: "19:00:00"
+        before: "23:00:00"
+      - condition: state
+        entity_id: binary_sensor.kitchen_motion
+        state: "off"
+    actions:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.kitchen_lights
+    mode: single
+
+  # ═══════════════════════════════════════════════════════════════════
+  # BATHROOM — presence lighting + shower-steam run-on timer
+  # ═══════════════════════════════════════════════════════════════════
+  # This exemplar assumes lights + extractor fan share ONE switched
+  # circuit (common in UK bathrooms — the fan runs off the light
+  # switch). If yours are separate entities, drive the fan in the two
+  # shower automations and the lights in the two presence automations.
+  #
+  # Presence lighting only runs after dark — in daylight the window is
+  # enough for a normal visit. The shower detector runs any time of
+  # day (steam doesn't care about the sun).
+
+  - id: presence_bathroom_on
+    alias: "Bathroom: lights + fan on with presence (night only)"
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.bathroom_presence
+        to: "on"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.bathroom_presence_auto
+        state: "on"
+      - condition: state
+        entity_id: switch.bathroom_lights
+        state: "off"
+      - condition: sun
+        state: below_horizon
+    actions:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.bathroom_lights
+    mode: single
+
+  - id: presence_bathroom_off
+    alias: "Bathroom: lights + fan off on absence"
+    description: >
+      The sensor decides absence (mmWave breathing detection with its
+      own internal debounce) → off. UNLESS the shower timer is running,
+      in which case the fan keeps going for the full run-on cycle to
+      clear humidity — this condition is the whole point of the timer.
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.bathroom_presence
+        to: "off"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.bathroom_presence_auto
+        state: "on"
+      - condition: state
+        entity_id: switch.bathroom_lights
+        state: "on"
+      - condition: state
+        entity_id: timer.bathroom_shower
+        state: "idle"
+    actions:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.bathroom_lights
+    mode: single
+
+  - id: presence_bathroom_shower_detected
+    alias: "Bathroom: shower detected (humidity spike)"
+    description: >
+      Detect a shower by the RATE of humidity rise, not an absolute
+      level. The baseline in a bathroom drifts a long way with the
+      seasons and with how recently the room ventilated — any fixed
+      threshold either never fires (baseline already above it) or fires
+      on ambient drift. Instead: fire when humidity jumps by 12+ points
+      between two consecutive sensor reports. Zigbee humidity sensors
+      report in coarse steps, so a shower shows up as one big jump,
+      while baseline wobble between reports is under a point. Robust to
+      wherever the baseline sits. The template also guards against
+      unavailable/unknown flaps — a non-numeric from-state makes the
+      condition false instead of throwing.
+    triggers:
+      - trigger: state
+        entity_id: sensor.bathroom_humidity
+    conditions:
+      - condition: state
+        entity_id: input_boolean.bathroom_presence_auto
+        state: "on"
+      - condition: template
+        value_template: >
+          {% set fs = trigger.from_state %}
+          {% set ts = trigger.to_state %}
+          {% set frm = fs.state | float(none) if fs else none %}
+          {% set to = ts.state | float(none) if ts else none %}
+          {{ frm is not none and to is not none and (to - frm) >= 12 }}
+    actions:
+      - action: timer.start
+        target:
+          entity_id: timer.bathroom_shower
+        data:
+          duration: "00:20:00"
+      - action: switch.turn_on
+        target:
+          entity_id: switch.bathroom_lights
+    mode: single
+
+  - id: presence_bathroom_shower_timer_finished
+    alias: "Bathroom: shower run-on timer finished"
+    description: >
+      Run-on timer expired → lights + fan off. Fires regardless of
+      whether anyone is still present — the assumption is the shower
+      is long over and anyone still in there has the wall switch.
+      Deliberately NOT gated by the auto toggle: if the timer is
+      running, finish the cycle properly.
+    triggers:
+      - trigger: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.bathroom_shower
+    actions:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.bathroom_lights
+    mode: single

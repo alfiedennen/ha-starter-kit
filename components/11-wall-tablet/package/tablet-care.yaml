@@ -1,0 +1,239 @@
+# ══════════════════════════════════════════════════════════════════════
+# Package: tablet-care — battery care for a 24/7 wall-mounted tablet
+# ══════════════════════════════════════════════════════════════════════
+#
+# A wall tablet plugged in permanently sits at 100% charge forever, hot,
+# which is the fastest way to kill a lithium cell (swollen batteries in
+# wall mounts are a real fire concern, not just a lifespan one). This
+# package cycles a smart plug so the battery lives in a 40–80% band —
+# the band where lithium chemistry ages slowest — and dims the screen
+# overnight so the panel isn't burning light and heat at 3am.
+#
+# Placeholders to rename (see README table):
+#   switch.tablet_charger                    — smart plug feeding the charger
+#   sensor.wall_tablet_battery               — battery % (kiosk app integration)
+#   binary_sensor.wall_tablet_plugged_in     — charging state (optional, dashboard only)
+#   number.wall_tablet_screen_brightness     — screen brightness 0–255 (kiosk app)
+#
+# Drop this file into /config/packages/ (with
+# "homeassistant: packages: !include_dir_named packages" in
+# configuration.yaml), rename the entities, reload automations.
+# ══════════════════════════════════════════════════════════════════════
+
+# ── Helpers ───────────────────────────────────────────────────────────
+# Thresholds and times live in helpers so they're tweakable from the UI
+# without editing YAML. NOTE on `initial:`: with it set, the value RESETS
+# to the YAML default on every HA restart — treat the YAML as the single
+# source of truth and edit it here to retune. If you'd rather tune from
+# the UI and have changes survive restarts, delete the `initial:` lines
+# (first boot then starts at the slider minimum, so set values once).
+
+input_number:
+  wall_tablet_charge_stop:
+    name: "Wall tablet: stop charging at"
+    # 80% ceiling: lithium cells age fastest held at high charge. An
+    # 80/40 band typically fires the plug once or twice a day and
+    # multiplies cell lifespan versus floating at 100%.
+    initial: 80
+    min: 50
+    max: 100
+    step: 5
+    unit_of_measurement: "%"
+    icon: mdi:battery-charging-80
+  wall_tablet_charge_start:
+    name: "Wall tablet: start charging at"
+    # 40% floor: enough headroom that a missed trigger or an evening of
+    # heavy screen use never gets near a dead battery.
+    initial: 40
+    min: 10
+    max: 60
+    step: 5
+    unit_of_measurement: "%"
+    icon: mdi:battery-charging-40
+  wall_tablet_brightness_day:
+    name: "Wall tablet: daytime brightness"
+    # 0–255 scale (matches the kiosk app's brightness entity). 120 is a
+    # deliberate cap, not a taste choice: at high daytime brightness a
+    # tablet panel can draw MORE than a modest USB charger supplies, so
+    # the battery drains even while "charging" — one production tablet
+    # went from 39% to flat in 24h this way. Lowering brightness gave
+    # the charger headroom and the cell recovered. If your battery
+    # sags while plugged in, lower this before blaming the plug.
+    initial: 120
+    min: 10
+    max: 255
+    step: 5
+    icon: mdi:brightness-6
+  wall_tablet_brightness_night:
+    name: "Wall tablet: night brightness"
+    # ~12% — dim enough to kill light pollution in a hallway/bedroom
+    # sightline, bright enough that the screen is still readable if
+    # someone walks past. Also minimises overnight heat and draw.
+    initial: 30
+    min: 1
+    max: 100
+    step: 1
+    icon: mdi:brightness-4
+
+input_datetime:
+  wall_tablet_dim_time:
+    name: "Wall tablet: dim at"
+    has_date: false
+    has_time: true
+    initial: "22:00"
+  wall_tablet_brighten_time:
+    name: "Wall tablet: brighten at"
+    has_date: false
+    has_time: true
+    initial: "06:30"
+
+# ── Automations ───────────────────────────────────────────────────────
+
+automation:
+  # Stop charging at the ceiling. numeric_state accepts a helper entity
+  # in `above:`, so the threshold is live-tunable — no YAML edit needed
+  # when you change the input_number.
+  - id: wall_tablet_charge_stop_at_ceiling
+    alias: "Wall tablet: stop charging at ceiling"
+    description: "Cut the charger plug when the tablet battery reaches the stop threshold"
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.wall_tablet_battery
+        above: input_number.wall_tablet_charge_stop
+    conditions:
+      - condition: state
+        entity_id: switch.tablet_charger
+        state: "on"
+    actions:
+      - action: switch.turn_off
+        target:
+          entity_id: switch.tablet_charger
+
+  - id: wall_tablet_charge_start_at_floor
+    alias: "Wall tablet: start charging at floor"
+    description: "Restore the charger plug when the tablet battery falls to the start threshold"
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.wall_tablet_battery
+        below: input_number.wall_tablet_charge_start
+    conditions:
+      - condition: state
+        entity_id: switch.tablet_charger
+        state: "off"
+    actions:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.tablet_charger
+
+  # Safety kick — the failure mode the two automations above are blind
+  # to: the plug is OFF and the battery sensor stops reporting (kiosk
+  # app crashed, tablet dropped off WiFi, tablet powered itself down at
+  # 0%). No telemetry means no numeric_state trigger will EVER fire, so
+  # the plug would stay off and the tablet would die on the wall.
+  # After 30 minutes of silence, force the plug ON — a tablet that
+  # boots when power returns will restart its kiosk app and recover on
+  # its own.
+  #
+  # Two triggers because staleness has two shapes:
+  #   1. the integration marks the sensor unavailable/unknown, or
+  #   2. the entity looks fine but hasn't REPORTED in 30 min. We check
+  #      last_reported, not last_updated — a healthy battery sensor
+  #      re-reporting the same percentage bumps last_reported only, so
+  #      last_updated goes stale on perfectly healthy sensors and
+  #      false-alarms. (Templates containing now() re-evaluate once a
+  #      minute, which is what makes this trigger tick at all.)
+  - id: wall_tablet_charger_stale_telemetry_kick
+    alias: "Wall tablet: charger safety kick on stale telemetry"
+    description: "Force the charger plug on if battery telemetry goes quiet for 30 minutes"
+    triggers:
+      - trigger: state
+        entity_id: sensor.wall_tablet_battery
+        to: ["unavailable", "unknown"]
+        for: "00:30:00"
+      - trigger: template
+        value_template: >-
+          {{ has_value('sensor.wall_tablet_battery')
+             and (now() - states.sensor.wall_tablet_battery.last_reported).total_seconds() > 1800 }}
+    conditions:
+      # Only act when the plug is off — if it's already on, power is
+      # flowing and there's nothing useful to do. This also stops the
+      # template trigger re-firing every minute during a long outage.
+      - condition: state
+        entity_id: switch.tablet_charger
+        state: "off"
+    actions:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.tablet_charger
+      # notify.notify goes to the companion app by default — swap in
+      # your own notifier (Telegram, etc.) if you use one.
+      - action: notify.notify
+        data:
+          title: "Wall tablet telemetry stale"
+          message: >-
+            No battery report for 30+ minutes — charger forced ON as a
+            precaution. Check the kiosk app and the tablet's WiFi.
+
+  # Last-ditch net: battery critically low regardless of plug state.
+  # Catches a plug that's on but not delivering (dead charger, loose
+  # cable, USB port failure) — the one case the cycle logic can't see.
+  - id: wall_tablet_battery_emergency_force_on
+    alias: "Wall tablet: emergency charge on critical battery"
+    description: "Force the charger plug on and alert if the battery gets critically low"
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.wall_tablet_battery
+        below: 10
+        for: "00:02:00"
+    actions:
+      - action: switch.turn_on
+        target:
+          entity_id: switch.tablet_charger
+      - action: persistent_notification.create
+        data:
+          title: "Wall tablet battery critical"
+          message: >-
+            Battery at {{ states('sensor.wall_tablet_battery') }}% — charger
+            forced on. If it was already on, the charger or cable has
+            probably failed: check the plug's power draw.
+          notification_id: wall_tablet_battery
+      - action: notify.notify
+        data:
+          title: "Wall tablet battery critical"
+          message: >-
+            Battery at {{ states('sensor.wall_tablet_battery') }}% with the
+            charger forced on — check the charger, cable and plug.
+
+  # Overnight dim / morning brighten via the kiosk app's brightness
+  # entity. Trigger `at:` accepts input_datetime helpers, so times are
+  # tunable from the UI too.
+  - id: wall_tablet_screen_dim_overnight
+    alias: "Wall tablet: dim overnight, brighten in the morning"
+    description: "Drop screen brightness overnight for a wall-mounted kiosk, restore it in the morning"
+    triggers:
+      - trigger: time
+        at: input_datetime.wall_tablet_dim_time
+        id: dim
+      - trigger: time
+        at: input_datetime.wall_tablet_brighten_time
+        id: brighten
+    actions:
+      - choose:
+          - conditions:
+              - condition: trigger
+                id: dim
+            sequence:
+              - action: number.set_value
+                target:
+                  entity_id: number.wall_tablet_screen_brightness
+                data:
+                  value: "{{ states('input_number.wall_tablet_brightness_night') | int(30) }}"
+          - conditions:
+              - condition: trigger
+                id: brighten
+            sequence:
+              - action: number.set_value
+                target:
+                  entity_id: number.wall_tablet_screen_brightness
+                data:
+                  value: "{{ states('input_number.wall_tablet_brightness_day') | int(120) }}"

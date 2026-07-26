@@ -1,0 +1,219 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Voice satellite — M5Stack Atom Echo
+# ═══════════════════════════════════════════════════════════════════════════
+# One file per satellite. Copy this file once per room and change BOTH
+# substitutions below so every device gets a unique hostname
+# (voice-satellite-kitchen, voice-satellite-office, ...).
+#
+# First flash must be over USB-C. Every update after that goes over-the-air.
+#
+# After the device shows up in Home Assistant, do these two things or voice
+# control will not behave:
+#   1. Assign the device to the room it PHYSICALLY sits in
+#      (Settings → Devices & services → this device → pencil icon → Area).
+#      Assist uses the satellite's area as the "spoken from" context, so
+#      "turn on the lights" targets THAT room's lights. A wrong or missing
+#      area means commands hit the wrong room or fail with "no device found".
+#   2. Pick its Assist pipeline + wake word settings on the device page.
+# ═══════════════════════════════════════════════════════════════════════════
+
+substitutions:
+  name: voice-satellite-1
+  friendly_name: "Voice Satellite 1"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: false
+  min_version: 2024.11.0
+  platformio_options:
+    # The Atom Echo's flash chip needs DIO mode — the QIO default on some
+    # toolchains produces boot loops on this board.
+    board_build.flash_mode: dio
+  on_boot:
+    priority: -100
+    then:
+      # Deliberate: don't start the wake word engine until the Home
+      # Assistant connection is up. A wake detection with no API connection
+      # goes nowhere and the pipeline can wedge until the next reboot.
+      - wait_until: api.connected
+      - delay: 1s
+      - micro_wake_word.start:
+
+esp32:
+  board: m5stack-atom
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  # The ESPHome dashboard generates a unique encryption key per device when
+  # it first creates a config. If you manage this file by hand, generate a
+  # key per device and keep each one in the ESPHome add-on's own
+  # secrets.yaml (note: that is /config/esphome/secrets.yaml — a SEPARATE
+  # file from Home Assistant's /config/secrets.yaml):
+  # encryption:
+  #   key: !secret voice_satellite_1_api_key
+  on_client_connected:
+    # Belt-and-braces: whenever HA (re)connects, make sure the wake word
+    # engine is actually running. It can be left stopped after an OTA
+    # update, or after an HA restart that landed mid-conversation.
+    - if:
+        condition:
+          lambda: "return !id(va).is_running();"
+        then:
+          - micro_wake_word.start:
+
+ota:
+  - platform: esphome
+
+wifi:
+  # ESP32 is 2.4 GHz ONLY. Make sure this SSID broadcasts on 2.4 GHz — a
+  # 5 GHz-only network is invisible to every satellite.
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    # Fallback hotspot: if the device can't join your wifi it broadcasts
+    # this AP instead. Join it and browse to 192.168.4.1 to fix credentials
+    # without re-flashing.
+    ssid: "${name}"
+    password: !secret fallback_ap_password
+
+button:
+  - platform: factory_reset
+    id: factory_reset_btn
+    name: "Factory Reset"
+    disabled_by_default: true
+
+i2s_audio:
+  - id: i2s_audio_bus
+    i2s_lrclk_pin: GPIO33
+    i2s_bclk_pin: GPIO19
+
+microphone:
+  - platform: i2s_audio
+    id: echo_mic
+    i2s_din_pin: GPIO23
+    adc_type: external
+    pdm: true
+
+speaker:
+  - platform: i2s_audio
+    id: echo_speaker
+    i2s_dout_pin: GPIO22
+    dac_type: external
+    i2s_mode: primary
+
+voice_assistant:
+  id: va
+  microphone: echo_mic
+  # ── External-speaker routing ──────────────────────────────────────────
+  # The Echo's built-in 0.5 W speaker is tinny — fine for short
+  # confirmations, grim for anything longer. Two ways to run it:
+  #
+  #   A) Leave `speaker: echo_speaker` in place (the default here):
+  #      Assist replies play on the Echo itself. Simplest; works out of
+  #      the box.
+  #   B) Delete the `speaker: echo_speaker` line below: the satellite
+  #      becomes listen-only (mic + wake word + LED feedback, no on-device
+  #      audio) and ALL audible output — timer alerts, announcements —
+  #      routes through script.announce (see the package file) to a
+  #      proper speaker in the room. Recommended once each room has a
+  #      decent media_player.
+  speaker: echo_speaker
+  # Mic tuning — community-verified values for this board's tiny PDM mic.
+  # noise_suppression_level (0-4): 2 is the sweet spot; higher starts
+  # eating quiet speech. auto_gain at maximum compensates for the small
+  # far-field microphone.
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  volume_multiplier: 2.0
+  # LED language: solid blue = listening, blue-green pulse = thinking,
+  # green = replying, red flash = error, off = idle.
+  on_listening:
+    - light.turn_on:
+        id: led
+        blue: 100%
+        red: 0%
+        green: 0%
+        brightness: 100%
+        effect: none
+  on_stt_vad_end:
+    - light.turn_on:
+        id: led
+        blue: 100%
+        red: 0%
+        green: 50%
+        brightness: 100%
+        effect: pulse
+  on_tts_start:
+    - light.turn_on:
+        id: led
+        blue: 0%
+        red: 0%
+        green: 100%
+        brightness: 100%
+        effect: none
+  on_tts_end:
+    - light.turn_on:
+        id: led
+        blue: 0%
+        red: 0%
+        green: 100%
+        brightness: 100%
+        effect: none
+  on_end:
+    # Restart the wake word engine only after the pipeline has fully
+    # stopped, and keep the LED on until the speaker has finished playing
+    # the reply — otherwise the light cuts out mid-sentence.
+    - delay: 100ms
+    - wait_until:
+        not:
+          voice_assistant.is_running:
+    - micro_wake_word.start:
+    - delay: 1s
+    - wait_until:
+        not:
+          speaker.is_playing:
+    - light.turn_off:
+        id: led
+  on_error:
+    - light.turn_on:
+        id: led
+        red: 100%
+        green: 0%
+        blue: 0%
+        brightness: 100%
+        effect: none
+    - delay: 1s
+    - light.turn_off:
+        id: led
+
+micro_wake_word:
+  models:
+    # Stock on-device wake word ("Okay Nabu"). Two other stock models work
+    # out of the box: hey_jarvis and hey_mycroft — just swap the name and
+    # reflash. Custom wake words are trainable with the microWakeWord
+    # pipeline, but the stock models are solid; start here.
+    - model: okay_nabu
+  on_wake_word_detected:
+    - voice_assistant.start:
+
+light:
+  # The Atom Echo's single onboard RGB LED — used purely for pipeline
+  # state feedback (see the LED language comment above).
+  - platform: esp32_rmt_led_strip
+    id: led
+    pin: GPIO27
+    default_transition_length: 0s
+    chipset: SK6812
+    num_leds: 1
+    rgb_order: GRB
+    effects:
+      - pulse:
+          name: "pulse"
+          transition_length: 250ms
+          update_interval: 250ms
+          min_brightness: 50%
+          max_brightness: 100%

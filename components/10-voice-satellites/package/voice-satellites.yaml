@@ -1,0 +1,475 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Voice satellites — announce plumbing + a pool of 3 timers and 3 alarms
+# ═══════════════════════════════════════════════════════════════════════════
+# Drop this file into /config/packages/ (the kit's base config loads
+# packages via `homeassistant: packages: !include_dir_named packages`) and
+# restart Home Assistant. Then rename the placeholder entities — at minimum
+# media_player.announce_speaker — per the README table.
+#
+# Why a fixed POOL of timers: Home Assistant timer helpers must exist
+# before they can be started — they can't be created on the fly. Three
+# labelled slots ("pasta", "laundry", "bread") cover real household use;
+# to add a fourth, copy-paste a slot everywhere a `_3` appears in this file.
+#
+# Everything audible routes through ONE script (script.announce), so
+# swapping the speaker or the TTS engine is a one-line change in one place.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Timer pool — 3 slots, duration set dynamically at start time ──────────
+timer:
+  voice_timer_1:
+    # Duration is passed to timer.start each time, so the configured
+    # default stays zero.
+    duration: "00:00:00"
+    icon: mdi:timer-outline
+    # Without restore, an HA restart mid-countdown silently eats the timer
+    # — no finish event, no announcement, your pasta boils dry. Restore
+    # lets a running timer survive the restart and still fire.
+    restore: true
+  voice_timer_2:
+    duration: "00:00:00"
+    icon: mdi:timer-outline
+    restore: true
+  voice_timer_3:
+    duration: "00:00:00"
+    icon: mdi:timer-outline
+    restore: true
+
+input_text:
+  # Timer labels — paired 1:1 with timer.voice_timer_N. Set at start time,
+  # spoken in the finish announcement, cleared after firing.
+  voice_timer_1_label:
+    name: Timer 1 label
+    max: 50
+  voice_timer_2_label:
+    name: Timer 2 label
+    max: 50
+  voice_timer_3_label:
+    name: Timer 3 label
+    max: 50
+  # Alarm labels — paired 1:1 with input_datetime.voice_alarm_N.
+  voice_alarm_1_label:
+    name: Alarm 1 label
+    max: 50
+  voice_alarm_2_label:
+    name: Alarm 2 label
+    max: 50
+  voice_alarm_3_label:
+    name: Alarm 3 label
+    max: 50
+  # Free-text box for script.announce_typed — pair with a dashboard text
+  # card + button for a "household PA" panel.
+  announce_message:
+    name: Announce message
+    icon: mdi:bullhorn
+    max: 255
+
+input_boolean:
+  # Armed flag per alarm slot. Alarms are single-fire: the fire automation
+  # switches this off the moment it triggers, so a stale alarm can never
+  # go off again days later. Re-arm from the dashboard to reuse the slot.
+  voice_alarm_1_active:
+    name: Alarm 1 active
+    icon: mdi:alarm
+  voice_alarm_2_active:
+    name: Alarm 2 active
+    icon: mdi:alarm
+  voice_alarm_3_active:
+    name: Alarm 3 active
+    icon: mdi:alarm
+
+input_datetime:
+  # Date + time (not time-only) is deliberate: it makes each alarm a
+  # ONE-SHOT ("tomorrow 07:00"), not a daily repeater. A time-only alarm
+  # that keeps firing every morning weeks after you forgot about it is
+  # worse than having to re-arm on purpose.
+  voice_alarm_1:
+    name: Alarm 1
+    icon: mdi:alarm
+    has_date: true
+    has_time: true
+  voice_alarm_2:
+    name: Alarm 2
+    icon: mdi:alarm
+    has_date: true
+    has_time: true
+  voice_alarm_3:
+    name: Alarm 3
+    icon: mdi:alarm
+    has_date: true
+    has_time: true
+
+script:
+  # ── The single announcement path ────────────────────────────────────────
+  announce:
+    alias: Announce
+    icon: mdi:bullhorn
+    description: >
+      Speak a message on the announcement speaker. Every alert in this kit
+      routes through this one script, so changing the speaker or TTS
+      engine is a one-line edit here — never in the automations.
+    fields:
+      message:
+        description: Message to speak
+        required: true
+        selector:
+          text:
+    sequence:
+      # ── OPTIONAL GATE: skip TTS during phone calls ─────────────────────
+      # Nothing undermines an announcement system faster than it talking
+      # over you mid-call. Needs the companion app's phone state sensor
+      # (enable "Phone state" under the app's sensor settings). Uncomment
+      # and rename to use:
+      # - if:
+      #     - condition: template
+      #       value_template: >-
+      #         {{ states('sensor.your_phone_phone_state') in ['ringing', 'offhook'] }}
+      #   then:
+      #     - stop: "On a call — announcement suppressed"
+
+      - variables:
+          # THE one place to change the output speaker.
+          target_speaker: media_player.announce_speaker
+          # ── OPTIONAL: quiet hours ──────────────────────────────────────
+          # Early announcements at a quarter of the volume while someone
+          # may still be asleep. Uncomment here and swap the volume_level
+          # line below for the templated one.
+          # quiet_hours: "{{ now().hour < 9 and is_state('person.partner', 'home') }}"
+
+      # ── OPTIONAL: location-aware routing ───────────────────────────────
+      # With a decent speaker on more than one floor, route announcements
+      # to wherever you actually are. Key it off any presence signal you
+      # trust — a room-presence sensor, a BLE/wifi zone sensor, or a
+      # template sensor of your own. This variables block OVERRIDES the
+      # target_speaker set above:
+      # - variables:
+      #     target_speaker: >-
+      #       {{ 'media_player.upstairs_speaker'
+      #          if is_state('sensor.your_house_zone', 'upstairs')
+      #          else 'media_player.announce_speaker' }}
+
+      # Set the volume BEFORE speaking so the announcement plays at the
+      # chosen level. Smart speakers keep whatever volume was last set —
+      # skip this and an announcement inherits last night's whisper volume
+      # (inaudible) or a party volume (heart-stopping). Delete this step
+      # only if your media_player doesn't support volume_set.
+      - action: media_player.volume_set
+        target:
+          entity_id: "{{ target_speaker }}"
+        data:
+          volume_level: 0.5
+          # Quiet-hours variant (pair with the variable above):
+          # volume_level: "{{ 0.25 if quiet_hours else 0.5 }}"
+
+      - action: tts.speak
+        target:
+          # Swap for tts.piper (or any other TTS entity) if you run local.
+          entity_id: tts.home_assistant_cloud
+        data:
+          media_player_entity_id: "{{ target_speaker }}"
+          message: "{{ message }}"
+
+  announce_typed:
+    alias: Announce typed message
+    icon: mdi:bullhorn-variant
+    description: >
+      Speak whatever is in input_text.announce_message, then clear it.
+      Pair with a dashboard text card + a button to run this script.
+    sequence:
+      # Refuse silently on an empty box rather than announcing "" (which
+      # some TTS engines render as an odd noise).
+      - condition: template
+        value_template: "{{ states('input_text.announce_message') | length > 0 }}"
+      - action: script.announce
+        data:
+          message: "{{ states('input_text.announce_message') }}"
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.announce_message
+        data:
+          value: ""
+
+  # ── Timer pool controls ────────────────────────────────────────────────
+  voice_timer_start:
+    alias: Start a timer (first free slot)
+    icon: mdi:timer-plus-outline
+    description: >
+      Start the first idle timer in the 3-slot pool with an optional
+      spoken label. Call it from a dashboard button, an automation, or
+      Assist ("run the script Start a timer" — or wire your own sentence
+      trigger). Paused timers count as busy on purpose: a paused timer is
+      one someone intends to resume.
+    fields:
+      minutes:
+        description: Countdown length in minutes
+        required: true
+        selector:
+          number:
+            min: 1
+            max: 720
+            unit_of_measurement: min
+      label:
+        description: What the timer is for (spoken in the finish announcement)
+        required: false
+        selector:
+          text:
+    sequence:
+      - variables:
+          slot: >-
+            {{ '1' if is_state('timer.voice_timer_1', 'idle')
+               else '2' if is_state('timer.voice_timer_2', 'idle')
+               else '3' if is_state('timer.voice_timer_3', 'idle')
+               else '' }}
+      - if:
+          - condition: template
+            value_template: "{{ slot == '' }}"
+        then:
+          # Say so rather than failing silently — a timer you believe is
+          # running but isn't is the worst failure mode this can have.
+          - action: script.announce
+            data:
+              message: "All three timers are already running."
+          - stop: "No free timer slot"
+      - action: input_text.set_value
+        target:
+          entity_id: "input_text.voice_timer_{{ slot }}_label"
+        data:
+          value: "{{ label | default('') }}"
+      - action: timer.start
+        target:
+          entity_id: "timer.voice_timer_{{ slot }}"
+        data:
+          # timer.start takes seconds (or HH:MM:SS) — seconds avoids the
+          # >99-minute formatting trap.
+          duration: "{{ (minutes | int) * 60 }}"
+
+  voice_timer_cancel_all:
+    alias: Cancel all timers
+    icon: mdi:timer-off-outline
+    description: Cancel every pool timer and clear the labels.
+    sequence:
+      - action: timer.cancel
+        target:
+          entity_id:
+            - timer.voice_timer_1
+            - timer.voice_timer_2
+            - timer.voice_timer_3
+      - action: input_text.set_value
+        target:
+          entity_id:
+            - input_text.voice_timer_1_label
+            - input_text.voice_timer_2_label
+            - input_text.voice_timer_3_label
+        data:
+          value: ""
+
+# ═════════════════════════════════════════════════════════════════════════
+# Fire handlers — announce + notify, then tidy the slot for reuse
+# ═════════════════════════════════════════════════════════════════════════
+automation:
+  # ── Timers ──────────────────────────────────────────────────────────────
+  - id: voice_kit_timer_1_finished
+    alias: "Timer 1 finished"
+    description: "Announce + notify when pool timer 1 completes"
+    triggers:
+      - trigger: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.voice_timer_1
+    variables:
+      raw_label: "{{ states('input_text.voice_timer_1_label') | default('') | trim }}"
+      # Defensive: drop unknown/unavailable/stale generic words that would
+      # otherwise produce stuttered TTS like "Your timer timer is done."
+      # (Voice-set labels DO occasionally arrive as literally "timer".)
+      label: >-
+        {% if raw_label in ['unknown', 'unavailable', 'timer', 'reminder', 'countdown', 'test'] %}{% else %}{{ raw_label }}{% endif %}
+    actions:
+      - action: script.announce
+        data:
+          message: "{% if label %}Your {{ label }} timer is done.{% else %}Your timer is done.{% endif %}"
+      # Phone push via the default notifier group (exists once the HA
+      # companion app — or any notify integration — is set up).
+      # continue_on_error so a missing notifier can't abort the automation
+      # before the label-clear below.
+      - action: notify.notify
+        continue_on_error: true
+        data:
+          title: "Timer done"
+          message: "{% if label %}{{ label }}{% else %}Timer{% endif %} finished at {{ now().strftime('%H:%M') }}."
+      # Always-works fallback: a notification inside the HA UI itself.
+      - action: persistent_notification.create
+        data:
+          title: "Timer done"
+          message: "{% if label %}{{ label }}{% else %}Timer{% endif %} finished at {{ now().strftime('%H:%M') }}."
+          notification_id: voice_timer_1
+      # Clear the label so the slot is clean for its next reuse.
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.voice_timer_1_label
+        data:
+          value: ""
+
+  - id: voice_kit_timer_2_finished
+    alias: "Timer 2 finished"
+    description: "Announce + notify when pool timer 2 completes"
+    triggers:
+      - trigger: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.voice_timer_2
+    variables:
+      raw_label: "{{ states('input_text.voice_timer_2_label') | default('') | trim }}"
+      label: >-
+        {% if raw_label in ['unknown', 'unavailable', 'timer', 'reminder', 'countdown', 'test'] %}{% else %}{{ raw_label }}{% endif %}
+    actions:
+      - action: script.announce
+        data:
+          message: "{% if label %}Your {{ label }} timer is done.{% else %}Your timer is done.{% endif %}"
+      - action: notify.notify
+        continue_on_error: true
+        data:
+          title: "Timer done"
+          message: "{% if label %}{{ label }}{% else %}Timer{% endif %} finished at {{ now().strftime('%H:%M') }}."
+      - action: persistent_notification.create
+        data:
+          title: "Timer done"
+          message: "{% if label %}{{ label }}{% else %}Timer{% endif %} finished at {{ now().strftime('%H:%M') }}."
+          notification_id: voice_timer_2
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.voice_timer_2_label
+        data:
+          value: ""
+
+  - id: voice_kit_timer_3_finished
+    alias: "Timer 3 finished"
+    description: "Announce + notify when pool timer 3 completes"
+    triggers:
+      - trigger: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.voice_timer_3
+    variables:
+      raw_label: "{{ states('input_text.voice_timer_3_label') | default('') | trim }}"
+      label: >-
+        {% if raw_label in ['unknown', 'unavailable', 'timer', 'reminder', 'countdown', 'test'] %}{% else %}{{ raw_label }}{% endif %}
+    actions:
+      - action: script.announce
+        data:
+          message: "{% if label %}Your {{ label }} timer is done.{% else %}Your timer is done.{% endif %}"
+      - action: notify.notify
+        continue_on_error: true
+        data:
+          title: "Timer done"
+          message: "{% if label %}{{ label }}{% else %}Timer{% endif %} finished at {{ now().strftime('%H:%M') }}."
+      - action: persistent_notification.create
+        data:
+          title: "Timer done"
+          message: "{% if label %}{{ label }}{% else %}Timer{% endif %} finished at {{ now().strftime('%H:%M') }}."
+          notification_id: voice_timer_3
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.voice_timer_3_label
+        data:
+          value: ""
+
+  # ── Alarms (single-fire — auto-disarm on trigger) ──────────────────────
+  - id: voice_kit_alarm_1_fire
+    alias: "Alarm 1 fire"
+    description: "Announce + notify when alarm 1's datetime arrives while armed"
+    triggers:
+      - trigger: time
+        at: input_datetime.voice_alarm_1
+    conditions:
+      - condition: state
+        entity_id: input_boolean.voice_alarm_1_active
+        state: "on"
+    variables:
+      raw_label: "{{ states('input_text.voice_alarm_1_label') | default('') | trim }}"
+      # Same defensive filter as the timers — never speak "unknown."
+      label: >-
+        {% if raw_label in ['unknown', 'unavailable', 'alarm', 'test'] %}{% else %}{{ raw_label }}{% endif %}
+    actions:
+      - action: script.announce
+        data:
+          message: "{% if label %}{{ label }}.{% else %}Alarm.{% endif %}"
+      # Disarm immediately: single-fire by design. The label is
+      # deliberately KEPT so a recurring use ("meds") only needs the
+      # toggle re-armed, not the label retyped.
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.voice_alarm_1_active
+      - action: notify.notify
+        continue_on_error: true
+        data:
+          title: "Alarm"
+          message: "{% if label %}{{ label }}{% else %}Alarm 1{% endif %} fired at {{ now().strftime('%H:%M') }}."
+      - action: persistent_notification.create
+        data:
+          title: "Alarm"
+          message: "{% if label %}{{ label }}{% else %}Alarm 1{% endif %} fired at {{ now().strftime('%H:%M') }}."
+          notification_id: voice_alarm_1
+
+  - id: voice_kit_alarm_2_fire
+    alias: "Alarm 2 fire"
+    description: "Announce + notify when alarm 2's datetime arrives while armed"
+    triggers:
+      - trigger: time
+        at: input_datetime.voice_alarm_2
+    conditions:
+      - condition: state
+        entity_id: input_boolean.voice_alarm_2_active
+        state: "on"
+    variables:
+      raw_label: "{{ states('input_text.voice_alarm_2_label') | default('') | trim }}"
+      label: >-
+        {% if raw_label in ['unknown', 'unavailable', 'alarm', 'test'] %}{% else %}{{ raw_label }}{% endif %}
+    actions:
+      - action: script.announce
+        data:
+          message: "{% if label %}{{ label }}.{% else %}Alarm.{% endif %}"
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.voice_alarm_2_active
+      - action: notify.notify
+        continue_on_error: true
+        data:
+          title: "Alarm"
+          message: "{% if label %}{{ label }}{% else %}Alarm 2{% endif %} fired at {{ now().strftime('%H:%M') }}."
+      - action: persistent_notification.create
+        data:
+          title: "Alarm"
+          message: "{% if label %}{{ label }}{% else %}Alarm 2{% endif %} fired at {{ now().strftime('%H:%M') }}."
+          notification_id: voice_alarm_2
+
+  - id: voice_kit_alarm_3_fire
+    alias: "Alarm 3 fire"
+    description: "Announce + notify when alarm 3's datetime arrives while armed"
+    triggers:
+      - trigger: time
+        at: input_datetime.voice_alarm_3
+    conditions:
+      - condition: state
+        entity_id: input_boolean.voice_alarm_3_active
+        state: "on"
+    variables:
+      raw_label: "{{ states('input_text.voice_alarm_3_label') | default('') | trim }}"
+      label: >-
+        {% if raw_label in ['unknown', 'unavailable', 'alarm', 'test'] %}{% else %}{{ raw_label }}{% endif %}
+    actions:
+      - action: script.announce
+        data:
+          message: "{% if label %}{{ label }}.{% else %}Alarm.{% endif %}"
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.voice_alarm_3_active
+      - action: notify.notify
+        continue_on_error: true
+        data:
+          title: "Alarm"
+          message: "{% if label %}{{ label }}{% else %}Alarm 3{% endif %} fired at {{ now().strftime('%H:%M') }}."
+      - action: persistent_notification.create
+        data:
+          title: "Alarm"
+          message: "{% if label %}{{ label }}{% else %}Alarm 3{% endif %} fired at {{ now().strftime('%H:%M') }}."
+          notification_id: voice_alarm_3

@@ -1,0 +1,108 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# BLE proxy node — bare ESP32 dev board
+#
+# One of these per room turns a £5 ESP32 into a Bluetooth range-extender for
+# Home Assistant. HA's Bluetooth stack treats every proxy as another antenna,
+# so integrations like Private BLE Device (phone/watch tracking) and Bermuda
+# (room-level trilateration) see the whole house instead of just the room the
+# HA server sits in.
+#
+# Copy this file once per node, change the two substitutions, flash.
+# ─────────────────────────────────────────────────────────────────────────────
+
+substitutions:
+  # Lowercase, hyphenated, unique per board — becomes the hostname + entity prefix.
+  name: presence-hallway
+  # Human name shown in Home Assistant. Include the room so Bermuda's scanner
+  # list is readable when you calibrate.
+  friendly_name: "Presence Node — Hallway"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  # Keep hostnames stable — a MAC suffix would change the entity ids if you
+  # ever re-flash a replacement board under the same name.
+  name_add_mac_suffix: false
+  min_version: 2024.11.0
+
+esp32:
+  # Generic ESP32-WROOM-32 dev board ("ESP32 DEVKIT" style). If you use a
+  # different board, change this — `esphome boards` lists valid ids.
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: INFO
+  # Disable serial-port logging once the board is deployed — it saves CPU and
+  # you'll only ever look at logs over the network (`esphome logs`).
+  baud_rate: 0
+
+api:
+  encryption:
+    key: !secret presence_node_api_key
+
+ota:
+  - platform: esphome
+    password: !secret presence_node_ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Fallback hotspot: if the board can't join WiFi (typo'd credentials, SSID
+  # change, router down) it broadcasts its own AP so you can rescue it without
+  # climbing up to unplug it. Connect to it and the captive portal opens.
+  ap:
+    ssid: "${name}"
+    password: !secret presence_node_ota_password
+
+captive_portal:
+
+esp32_ble_tracker:
+  scan_parameters:
+    # interval == window means the radio listens 100% of the time — the best
+    # setting for presence work, where a missed advertisement is a missed
+    # person. Only reduce the window if this board also has heavy WiFi duty
+    # and you see disconnects (BLE and WiFi share one radio on the ESP32).
+    interval: 1100ms
+    window: 1100ms
+    active: true
+
+bluetooth_proxy:
+  # active: true lets HA make outbound connections through this proxy too
+  # (needed by some BLE devices, harmless otherwise).
+  active: true
+
+sensor:
+  # Diagnostics — cheap, and invaluable when a node goes quiet: WiFi Signal
+  # tells you whether it's a range problem, Uptime whether it's boot-looping.
+  - platform: uptime
+    name: "Uptime"
+    update_interval: 60s
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+
+  # ── OPTIONAL: direct per-beacon RSSI sensors ────────────────────────────
+  # Only needed if you want raw dBm values in HA for your own threshold
+  # automations or custom room logic. For normal phone/watch room tracking
+  # you do NOT need this — the bluetooth_proxy above already feeds the
+  # Private BLE Device integration (recommended, survives MAC rotation) and
+  # Bermuda. See the README for why tracking a phone by MAC does not work.
+  #
+  # To use: have a device broadcast a fixed iBeacon (the HA Companion app on
+  # Android can do this: Settings → Companion app → Manage sensors → BLE
+  # Transmitter), paste its UUID below, and uncomment.
+  #
+  # - platform: ble_rssi
+  #   ibeacon_uuid: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"  # your beacon's UUID
+  #   name: "Phone RSSI"
+  #   filters:
+  #     # Re-publish at least every 2s so graphs stay live even when the
+  #     # value is static…
+  #     - heartbeat: 2s
+  #     # …and slam to -127 when the beacon vanishes, so "not seen" is
+  #     # distinguishable from "weak signal" in automations.
+  #     - timeout:
+  #         timeout: 15s
+  #         value: -127
