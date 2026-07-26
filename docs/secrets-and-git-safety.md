@@ -45,10 +45,14 @@ Rules:
   keys, and also the quieter ones people forget: latitude/longitude, Wi-Fi
   SSID, internal hostnames, URLs with embedded credentials, webhook IDs
   (a webhook ID *is* a credential — anyone who has it can fire the webhook).
-- Every kit component's README lists the secret keys it expects; start from
-  `base/secrets.yaml.example`, which collects them all with placeholder
-  values. The example file is committed; the real one never is.
-- ESPHome has its own `secrets.yaml` in the ESPHome folder — same rules.
+- Every kit component's README has a **"secrets.yaml keys needed"** section —
+  check it for each component you install (most need none at all).
+  `base/secrets.yaml.example` is a starting template with placeholder values,
+  not an exhaustive inventory. The example file is committed; the real one
+  never is.
+- There are **two** secrets files: Home Assistant's `/config/secrets.yaml`
+  and ESPHome's own `secrets.yaml` in the ESPHome add-on's config directory —
+  ESPHome device keys go in the latter, and the same rules apply to both.
 - Don't paste real secret values into chats, screenshots, forum posts, or bug
   reports. Redact first; the number of tokens leaked via "here's my log"
   screenshots is not small.
@@ -56,22 +60,47 @@ Rules:
 ## .gitignore — deny by default
 
 The safest stance for a config repo is: **ignore everything, allowlist what
-you've reviewed**. At minimum, the kit's shipped `.gitignore` excludes:
+you've reviewed**. As a minimum, this is the kit's shipped `.gitignore`,
+verbatim (note that gitignore comments must be on their own line — a trailing
+`# comment` after a pattern becomes *part of the pattern* and silently breaks
+it):
 
 ```gitignore
+# Never commit real secrets — only the .example files belong in git
 secrets.yaml
-*.env
+**/secrets.yaml
 .env*
-.storage/          # HA's internal registry — contains auth tokens and credentials
-*.dbetc            # databases, tokens, backups...
-backups/
+*.env
 *.token
 token.json
+
+# Home Assistant runtime artefacts (if you point HA at a clone of this repo).
+# .storage/ looks like boring internal state but holds auth tokens and
+# integration credentials — committing it is committing your passwords.
+.storage/
+.cloud/
+deps/
+tts/
+
+# Databases and logs (the recorder .db is a year of your location history)
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.log.*
+
+# Backups bundle your entire config — .storage and secrets included
+backup/
+backups/
+
+# OS noise
+.DS_Store
+Thumbs.db
 ```
 
-`.storage/` deserves emphasis: it looks like boring internal state, but it
-contains **auth sessions, refresh tokens and integration credentials**.
-Committing it is equivalent to committing your password. Never version it.
+`.storage/` deserves the emphasis: it contains **auth sessions, refresh
+tokens and integration credentials**. Committing it is equivalent to
+committing your password. Never version it.
 
 ## Wire up the secret scanner as a pre-commit hook
 

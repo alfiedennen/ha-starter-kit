@@ -11,8 +11,9 @@
 # labelled slots ("pasta", "laundry", "bread") cover real household use;
 # to add a fourth, copy-paste a slot everywhere a `_3` appears in this file.
 #
-# Everything audible routes through ONE script (script.announce), so
-# swapping the speaker or the TTS engine is a one-line change in one place.
+# Everything audible in this component routes through ONE script
+# (script.announce), so swapping the speaker or the TTS engine is a
+# one-line change in one place.
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ── Timer pool — 3 slots, duration set dynamically at start time ──────────
@@ -105,9 +106,9 @@ script:
     alias: Announce
     icon: mdi:bullhorn
     description: >
-      Speak a message on the announcement speaker. Every alert in this kit
-      routes through this one script, so changing the speaker or TTS
-      engine is a one-line edit here — never in the automations.
+      Speak a message on the announcement speaker. Every alert in this
+      component routes through this one script, so changing the speaker or
+      TTS engine is a one-line edit here — never in the automations.
     fields:
       message:
         description: Message to speak
@@ -284,7 +285,12 @@ automation:
       label: >-
         {% if raw_label in ['unknown', 'unavailable', 'timer', 'reminder', 'countdown', 'test'] %}{% else %}{{ raw_label }}{% endif %}
     actions:
+      # The speaker is the most fragile link in this chain (offline,
+      # rebooting, unplugged) — continue_on_error so a failed announce
+      # can never block the phone push, the persistent-notification
+      # fallback, or the label-clear that tidies the slot.
       - action: script.announce
+        continue_on_error: true
         data:
           message: "{% if label %}Your {{ label }} timer is done.{% else %}Your timer is done.{% endif %}"
       # Phone push via the default notifier group (exists once the HA
@@ -323,6 +329,7 @@ automation:
         {% if raw_label in ['unknown', 'unavailable', 'timer', 'reminder', 'countdown', 'test'] %}{% else %}{{ raw_label }}{% endif %}
     actions:
       - action: script.announce
+        continue_on_error: true
         data:
           message: "{% if label %}Your {{ label }} timer is done.{% else %}Your timer is done.{% endif %}"
       - action: notify.notify
@@ -355,6 +362,7 @@ automation:
         {% if raw_label in ['unknown', 'unavailable', 'timer', 'reminder', 'countdown', 'test'] %}{% else %}{{ raw_label }}{% endif %}
     actions:
       - action: script.announce
+        continue_on_error: true
         data:
           message: "{% if label %}Your {{ label }} timer is done.{% else %}Your timer is done.{% endif %}"
       - action: notify.notify
@@ -390,7 +398,11 @@ automation:
       label: >-
         {% if raw_label in ['unknown', 'unavailable', 'alarm', 'test'] %}{% else %}{{ raw_label }}{% endif %}
     actions:
+      # continue_on_error, same reasoning as the timers: the speaker is
+      # the most fragile link — it must never block the disarm below or
+      # the notification fallbacks.
       - action: script.announce
+        continue_on_error: true
         data:
           message: "{% if label %}{{ label }}.{% else %}Alarm.{% endif %}"
       # Disarm immediately: single-fire by design. The label is
@@ -426,6 +438,7 @@ automation:
         {% if raw_label in ['unknown', 'unavailable', 'alarm', 'test'] %}{% else %}{{ raw_label }}{% endif %}
     actions:
       - action: script.announce
+        continue_on_error: true
         data:
           message: "{% if label %}{{ label }}.{% else %}Alarm.{% endif %}"
       - action: input_boolean.turn_off
@@ -458,6 +471,7 @@ automation:
         {% if raw_label in ['unknown', 'unavailable', 'alarm', 'test'] %}{% else %}{{ raw_label }}{% endif %}
     actions:
       - action: script.announce
+        continue_on_error: true
         data:
           message: "{% if label %}{{ label }}.{% else %}Alarm.{% endif %}"
       - action: input_boolean.turn_off

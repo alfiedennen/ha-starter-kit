@@ -10,10 +10,16 @@
 # completes its interview — your cue to rename it BEFORE building
 # anything on it.
 #
+# Payloads use the Zigbee2MQTT 2.x permit_join API: {"time": <seconds>}
+# to open, {"time": 0} to close. (Z2M 1.x's {"value": ...} field is gone
+# — on current Z2M a "value"-style close silently does nothing.)
+#
 # Assumes the default Z2M base topic "zigbee2mqtt". If you changed it,
 # search-and-replace the topic in this file.
 # Notifications go to notify.notify (HA's default notifier — routes to
 # the Companion app if you have it). Swap for your own notify service.
+# The notify actions carry continue_on_error so the automations still
+# work on a fresh install where no notifier exists yet.
 
 input_boolean:
   zigbee_permit_join:
@@ -34,9 +40,11 @@ automation:
       - action: mqtt.publish
         data:
           topic: "zigbee2mqtt/bridge/request/permit_join"
-          # 254s is the maximum Z2M accepts for a single request —
-          # the keep-alive below re-arms it while the toggle stays on.
-          payload: '{"value": true, "time": 254}'
+          # Z2M 2.x API: the payload is just {"time": <seconds>}. 254s is
+          # the maximum Z2M accepts for a single request — the keep-alive
+          # below re-arms it while the toggle stays on. (The old 1.x
+          # {"value": true} form is gone; don't add it back.)
+          payload: '{"time": 254}'
     mode: single
 
   # ── Keep it open while the toggle stays on ────────────────────────────
@@ -57,7 +65,7 @@ automation:
       - action: mqtt.publish
         data:
           topic: "zigbee2mqtt/bridge/request/permit_join"
-          payload: '{"value": true, "time": 254}'
+          payload: '{"time": 254}'
     mode: single
 
   # ── Close the network when the toggle goes off ────────────────────────
@@ -71,7 +79,8 @@ automation:
       - action: mqtt.publish
         data:
           topic: "zigbee2mqtt/bridge/request/permit_join"
-          payload: '{"value": false}'
+          # Z2M 2.x API: {"time": 0} is how you close the window early.
+          payload: '{"time": 0}'
     mode: single
 
   # ── Safety net: auto-close after 15 minutes ───────────────────────────
@@ -90,7 +99,10 @@ automation:
       - action: input_boolean.turn_off
         target:
           entity_id: input_boolean.zigbee_permit_join
+      # continue_on_error: notify.notify doesn't exist until the Companion
+      # app is set up — the auto-close above must still happen without it.
       - action: notify.notify
+        continue_on_error: true
         data:
           title: "Zigbee"
           message: "Pairing mode auto-closed after 15 minutes."
@@ -113,7 +125,11 @@ automation:
              and trigger.payload_json.type == 'device_interview'
              and trigger.payload_json.data.status == 'successful' }}
     actions:
+      # continue_on_error: on a fresh install (no Companion app yet) this
+      # notifier doesn't exist. The device still appears in the Z2M
+      # frontend either way — the notification is a bonus, not the record.
       - action: notify.notify
+        continue_on_error: true
         data:
           title: "Zigbee"
           message: >-

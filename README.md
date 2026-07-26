@@ -22,6 +22,11 @@ together. Installing a component is:
 3. Add any `!secret` keys it needs to your `secrets.yaml`
 4. Restart Home Assistant (or reload YAML)
 
+A few components also ship extra artefacts beyond (or instead of) a package
+file — ESPHome device configs, a dashboard, a theme, starter scenes that
+merge into `scenes.yaml` — and their READMEs say exactly where each file
+goes.
+
 Never used packages before? Copy [`base/configuration.yaml`](base/configuration.yaml)
 (or merge its few keys into yours) — it wires up the `packages/` directory,
 themes, and UI-stub files. [`docs/getting-started.md`](docs/getting-started.md)
@@ -49,7 +54,7 @@ walks the whole path from empty hardware to first component.
 | 05 | [Smart lock](components/05-smart-lock/) | Auto-unlock policy (opt-in, honestly documented), bedtime autolock, left-unlocked warnings, battery alert — and the one automation everyone should steal: **post-unlock verification** that catches the lock silently ignoring commands | Smart lock |
 | 06 | [Scenes](components/06-scenes/) | Four starter scenes, a £10 4-button scene controller, and natural-language voice phrases ("warm lights", "movie mode") that run locally with zero cloud | Smart bulbs |
 | 07 | [Daily rhythms](components/07-daily-rhythms/) | The house's daily pulse: light schedules where manual always wins, goodnight macro, empty-house setback, welcome-home light after dark, voice-toggled dumb plugs | What you already have |
-| 08 | [ESP32 BLE presence](components/08-esphome-ble-presence/) | DIY room-level presence: £5 ESP32 Bluetooth-proxy nodes + optional £12 mmWave radar boards. The advanced one — marked "for the curious" | ESP32 boards, soldering-free |
+| 08 | [ESP32 BLE presence](components/08-esphome-ble-presence/) | DIY room-level presence: £5 ESP32 Bluetooth-proxy nodes + optional £12 mmWave radar boards. The advanced one — marked "for the curious" | ESP32 boards (no soldering if you use a JST pigtail) |
 | 09 | [ESPHome smart button](components/09-esphome-smart-button/) | A physical one-press button with instant beep feedback and success/failure tunes — wire it to anything | M5StickC Plus2 (~£15) |
 | 10 | [Voice satellites](components/10-voice-satellites/) | Room voice control on £12 Atom Echoes: Assist pipeline, an announce script, and a pool of voice-set timers and alarms | Atom Echo(es) |
 | 11 | [Wall tablet](components/11-wall-tablet/) | A wall-mounted dashboard done properly: kiosk mode, finger-sized cards via reusable style anchors, and charge cycling so the battery survives 24/7 duty | A used tablet (~£60) |
@@ -70,12 +75,17 @@ walks the whole path from empty hardware to first component.
 - **`!secret` everything, from day one.** See
   [docs/secrets-and-git-safety.md](docs/secrets-and-git-safety.md). A leaked
   HA token is remote control of your house.
+- **The shipped numbers are examples.** Every time, threshold and default in
+  this kit is an illustrative value chosen for the documentation — not a live
+  description of any particular household's schedule or security posture.
+  Tune them to your house.
 
 ## Repo layout
 
 ```
 base/         minimal configuration.yaml + secrets.yaml.example
-components/   13 self-contained components (package YAML + README each)
+components/   13 self-contained components (README + package YAML each;
+              some add extra files — ESPHome configs, dashboard, theme)
 docs/         getting started, hardware list, conventions, git safety
 scripts/      check-secrets.py — pre-commit secret scanner
 ```

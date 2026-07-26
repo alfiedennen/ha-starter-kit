@@ -22,6 +22,13 @@ input_boolean:
   cinema_auto_scene:
     name: Cinema auto-scene
     icon: mdi:movie-open-cog
+    # `initial: true` means the auto-scene SHIPS ON — without it a fresh
+    # install starts with the toggle off and the headline feature
+    # silently never fires. Trade-off: `initial:` re-asserts ON at every
+    # restart, even if you toggled it off yesterday. If you'd rather
+    # your last manual state survive restarts, delete this line (HA
+    # then restores whatever the toggle was before the restart).
+    initial: true
 
 automation:
   # ══════════════════════════════════════════════════════════════════

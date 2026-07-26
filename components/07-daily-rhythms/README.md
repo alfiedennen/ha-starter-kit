@@ -49,7 +49,7 @@ hardware you don't have.
 5. Edit the voice `command:` word lists to the words your household actually
    says (the `(study|office)` and `(work|worktop|bench|...)` alternations).
 6. Restart Home Assistant (or Developer Tools → YAML → reload everything
-   relevant). Check Settings → Automations — you should see ten new
+   relevant). Check Settings → Automations — you should see twelve new
    automations and one script.
 
 ## Rename these
@@ -66,7 +66,7 @@ hardware you don't have.
 | `switch.floor_lamp` | any dumb lamp on a smart plug (goodnight/empty-house off-list) |
 | `switch.worktop_lights` | the voice-toggled plug (bench/worktop/fairy lights…) |
 | `lock.front_door` | your smart lock (or delete the lock step) |
-| `climate.living_room_trv` … `climate.bedroom_trv` | your TRVs (edit the lists to your real set) |
+| `climate.living_room_trv`, `climate.kitchen_trv`, `climate.hallway_trv`, `climate.study_trv`, `climate.bathroom_trv`, `climate.bedroom_trv` | your TRVs — used by the goodnight script and the empty-house setback; edit both lists to your real set (bedroom appears only in the empty-house list, deliberately) |
 | `person.you` | your own person entity (Settings → People) |
 | `person.partner` | second household member (single household: delete their conditions/triggers) |
 

@@ -12,6 +12,19 @@
 #   3. add any `!secret` keys it needs to /config/secrets.yaml
 #   4. restart Home Assistant (or reload YAML from Developer Tools)
 #
+# MERGING INTO AN EXISTING CONFIG? A stock HAOS configuration.yaml already
+# contains automation:/script:/scene: include lines. Keep yours exactly as
+# they are and add ONLY the `homeassistant: packages:` block and the
+# `frontend: themes:` line — pasting this file in wholesale creates
+# duplicate keys (config-check failure) or two competing automation blocks.
+# The `automation ui:` / `script ui:` keys below are for fresh configs
+# built from this file alone.
+#
+# STARTING FRESH FROM THIS FILE? Check that automations.yaml, scripts.yaml
+# and scenes.yaml exist in /config — HAOS onboarding normally creates them.
+# If any are missing, create each one containing just an empty list: a
+# single line reading []
+#
 # ============================================================================
 
 # Loads the sane defaults every HA install wants (history, mobile_app,

@@ -50,7 +50,7 @@ Turns a cheap Android tablet into a wall-mounted control panel: a portrait, fing
    - *Device Management → Keep Screen On*: enabled.
 5. **Fully Kiosk integration in HA** — Settings → Devices & Services → Add Integration → *Fully Kiosk Browser*. Enter the tablet's IP and the remote-admin password. This creates the battery sensor, plugged-in binary sensor and screen-brightness number entity the package uses.
 6. **Rename entities** — work through the table below in both files.
-7. Reload automations (Developer Tools → YAML → *Automations*) or restart, and check the five automations appear under Settings → Automations.
+7. Restart Home Assistant (the package creates `input_number`/`input_datetime` helpers — a reload is not enough on first install), then check the five automations appear under Settings → Automations. Later edits to the package only need *Developer Tools → YAML → Reload automations*.
 
 ## Rename these
 
@@ -67,7 +67,7 @@ Placeholders in `dashboard/wall-tablet.yaml`:
 | `climate.kitchen` | Your kitchen TRV/thermostat |
 | `climate.hallway` | Your hallway TRV/thermostat |
 | `climate.bedroom` | Your bedroom TRV/thermostat |
-| `scene.evening` / `scene.bright` / `scene.relax` / `scene.movie` | Your scenes (Settings → Automations → Scenes; or repoint the tiles at scripts) |
+| `scene.warm_evening` / `scene.bright` / `scene.relax` / `scene.movie` | Your scenes — component 06's four scenes match these exactly (or repoint the tiles at scripts) |
 | `sensor.wall_tablet_battery` | Fully Kiosk battery sensor (e.g. `sensor.<tablet_name>_battery`) |
 | `binary_sensor.wall_tablet_plugged_in` | Fully Kiosk plugged-in sensor |
 

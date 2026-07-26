@@ -42,7 +42,10 @@ of chasing phantom problems. One metre of cable, dongle away from the machine
    `/dev/serial/by-id/...` form, which survives reboots; raw `/dev/ttyUSB0`
    style paths can shuffle).
 5. **Pick your Zigbee channel BEFORE pairing anything** — see the next
-   section. Set it in the add-on config (`zigbee_channel`), not after the fact.
+   section. It lives in Z2M's own configuration, not the add-on options:
+   either Z2M frontend → Settings → Settings → Advanced → *channel*, or in
+   Z2M's `configuration.yaml` under `advanced:` → `channel: <n>`. Set it
+   before the first device pairs, not after the fact.
 6. In Z2M's own config, confirm `permit_join: false` — the network stays
    closed; this package's toggle is how you open it.
 7. Start the add-on, check its log for a clean start, open the Z2M sidebar
@@ -52,8 +55,15 @@ of chasing phantom problems. One metre of cable, dongle away from the machine
    reloads suffice).
 9. Pair your first device: flip **Zigbee pairing mode** on (it's a toggle
    entity — put it on a dashboard), wake the device (usually hold its button
-   5s), wait for the "Device paired" notification, **rename it immediately**
+   5s), watch it appear in the Z2M frontend, **rename it immediately**
    (below), toggle pairing mode off.
+
+> **About the "Device paired" phone notification**: it's a bonus, not the
+> record. The paired device *always* appears in the Z2M frontend regardless —
+> that's what to watch during pairing. The notification needs the Companion
+> app installed and signed in (see [docs/getting-started.md](../../docs/getting-started.md),
+> which covers setting it up); until then the notify action is skipped
+> harmlessly (`continue_on_error` in the package).
 
 ## Choosing the radio channel (do this first, it's a one-way door)
 
@@ -87,6 +97,12 @@ the pragmatic "away from everything" pick if your Wi-Fi sits on channel 1.
   single request at 254 seconds — long enough to miss a sleepy device
   waking), and slams the door after 15 minutes if you forget. An open Zigbee
   network accepts *any* join request, including the neighbour's new bulbs.
+- **Under the hood (Z2M 2.x API)**: the package publishes to
+  `zigbee2mqtt/bridge/request/permit_join` with payload `{"time": 254}` to
+  open the window, and `{"time": 0}` to close it early — that zero is the
+  official "shut it now" form. (Z2M 1.x used a `"value"` field; that API is
+  gone, and a `"value"`-style close on current Z2M silently does nothing,
+  leaving the network open until the window expires on its own.)
 - **Pair devices in their final location**, not next to the coordinator. The
   device joins via the best route it can hear *from where it is*; pairing on
   your desk then moving it to the far bathroom starts its life on a route

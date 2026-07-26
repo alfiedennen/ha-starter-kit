@@ -50,7 +50,7 @@ input_datetime:
     name: "Lock: curfew time"
     has_date: false
     has_time: true
-    initial: "21:00"
+    initial: "22:00" # illustrative default — pick your own bedtime
     icon: mdi:clock-alert-outline
 
 # ─── 2. Announce script ─────────────────────────────────────────────────
@@ -102,7 +102,7 @@ automation:
     description: "TTS reminder if the door is still unlocked late in the evening"
     triggers:
       - trigger: time
-        at: "22:00:00"
+        at: "23:00:00"
     conditions:
       - condition: state
         entity_id: lock.front_door
@@ -134,7 +134,9 @@ automation:
             Lock battery is at {{ states('sensor.front_door_battery') }}%.
             Lithium cells die fast past this point — replace it now, not
             next week.
+      # Best-effort: an offline speaker must not abort the automation.
       - action: script.lock_announce
+        continue_on_error: true
         data:
           message: "The front door lock battery is low. Time to replace it."
     mode: single
@@ -255,8 +257,9 @@ automation:
   #   event and locks reliably. So to remote-lock: call lock.unlock
   #   (which works), and let the lock relock itself. Counter-intuitive
   #   but it's the only remote path this hardware offers. HONESTY NOTE:
-  #   this trick has proven flaky in production — treat the phone nudge
-  #   as the real safety net and be prepared to walk to the door.
+  #   the trick is reported as flaky on this hardware class — treat the
+  #   phone nudge as the real safety net and be prepared to walk to the
+  #   door.
   #
   # No fight with section 4a: the relock happens AT curfew, and 4a only
   # unlocks BEFORE curfew, so the auto-unlock policy never reverses the
@@ -313,7 +316,9 @@ automation:
               message: >-
                 Bedtime autolock ran but the door is still unlocked after
                 90 seconds. Please lock it by hand.
+          # Best-effort: an offline speaker must not abort the automation.
           - action: script.lock_announce
+            continue_on_error: true
             data:
               message: "The front door did not lock. Please lock it by hand."
     mode: single
@@ -387,11 +392,9 @@ automation:
           # not a presumed cause.
           - conditions: []
             sequence:
-              - action: script.lock_announce
-                data:
-                  message: >-
-                    The front door didn't respond to unlock. Someone may
-                    be trying to come in. Please check the lock.
+              # Phone alert first — the speaker is the step most likely to
+              # be broken, and a failed announce must never swallow the
+              # phone alert.
               - action: notify.notify
                 data:
                   title: "Front door unlock failed"
@@ -399,7 +402,7 @@ automation:
                     Unlock fired but the lock didn't move within 10 s.
                     Check HA Settings → Repairs (auth expiry), the lock
                     battery, and Bluetooth range. Inside speaker also
-                    notified.
+                    notified (best-effort).
                     {# If your lock exposes an operator/diagnostic
                        sensor, append it here for hand-off, e.g.
                        "Operator: {{ states('sensor.front_door_operator') }}" #}
@@ -409,4 +412,12 @@ automation:
                   message: >-
                     Unlock service call did not produce a state change
                     within 10 s. Occupants notified.
+              # Best-effort: if the speaker is offline (Cast device asleep,
+              # media_player unavailable), carry on rather than abort.
+              - action: script.lock_announce
+                continue_on_error: true
+                data:
+                  message: >-
+                    The front door didn't respond to unlock. Someone may
+                    be trying to come in. Please check the lock.
     mode: restart

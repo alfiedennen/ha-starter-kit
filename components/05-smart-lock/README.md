@@ -58,7 +58,7 @@ Some vendors (Yale among them) rotate the lock's BLE offline key server-side. Th
 
 ### The unlock-re-arm trick (Yale Conexis L2-class quirk)
 
-On this hardware class, three motor paths behave differently: `lock.lock` is a **silent no-op**, the vendor app's own lock button reports "jammed", but the lock's internal auto-relock timer fires ~35 s after **any** unlock event and locks reliably. So the only remote-lock path is: call `lock.unlock`, and let the lock relock itself. The package implements this behind `input_boolean.lock_use_rearm_trick`. Be honest with yourself about it: **it's flaky in production**. The 90-second fallback phone nudge is the real safety net — treat the trick as best-effort and be prepared to walk to the door. If you haven't bought a lock yet, buy one with real remote locking instead.
+On this hardware class, three motor paths behave differently: `lock.lock` is a **silent no-op**, the vendor app's own lock button reports "jammed", but the lock's internal auto-relock timer fires ~35 s after **any** unlock event and locks reliably. So the only remote-lock path is: call `lock.unlock`, and let the lock relock itself. The package implements this behind `input_boolean.lock_use_rearm_trick`. Be honest with yourself about it: **the trick is reported as flaky on this hardware class** — treat `lock.lock` as untrustworthy on a Conexis L2, use the re-arm pattern instead, and treat the 90-second fallback phone nudge as the real safety net. Be prepared to walk to the door. If you haven't bought a lock yet, buy one with real remote locking instead.
 
 The fallback nudge doubles as a detector: if your lock silently ignores `lock.lock`, the nudge is how you find out — the plain path no-ops and 90 s later your phone tells you.
 
@@ -88,7 +88,7 @@ The verification automation runs in `mode: restart`: four panicked unlock taps p
 
 ### `initial:` on helpers resets at every restart
 
-The curfew helper uses `initial: "21:00"`, which makes the YAML the source of truth — and means a value changed from the UI quietly reverts at the next HA restart. Change the curfew by editing the package file. This is a general HA behaviour worth knowing: any `input_*` helper with `initial:` set resets on restart.
+The curfew helper uses `initial: "22:00"` (an illustrative default — pick your own bedtime), which makes the YAML the source of truth — and means a value changed from the UI quietly reverts at the next HA restart. Change the curfew by editing the package file. This is a general HA behaviour worth knowing: any `input_*` helper with `initial:` set resets on restart.
 
 ### "Locked" and "closed" are different facts
 

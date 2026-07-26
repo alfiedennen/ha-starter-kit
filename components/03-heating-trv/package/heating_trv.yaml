@@ -244,12 +244,20 @@ script:
           message: "Heating boost activated. All rooms warming for one hour."
       - delay:
           hours: 1
-      - action: scene.turn_on
-        target:
-          entity_id: scene.before_heating_boost
+      # Clear the guard BEFORE attempting the restore, and let a failed
+      # restore continue. scene.create snapshots live in memory only — if
+      # Home Assistant restarted since the snapshot was taken, the scene no
+      # longer exists and scene.turn_on errors. With the guard cleared first
+      # and continue_on_error on the restore, a lost snapshot can never
+      # leave the guard latched ON (which would make every later boost skip
+      # the snapshot AND die on the restore — permanently wedged).
       - action: input_boolean.turn_off
         target:
           entity_id: input_boolean.heating_boost_active
+      - action: scene.turn_on
+        continue_on_error: true
+        target:
+          entity_id: scene.before_heating_boost
       - action: tts.speak
         continue_on_error: true
         target:
@@ -409,6 +417,29 @@ automation:
           temperature: 5
           hvac_mode: heat
 
+  # Catch-all off for the bedroom. The 06:00 off above only covers the
+  # fixed-time morning warm-up — an ALARM-driven pre-heat (bottom of this
+  # file) for an alarm after ~06:20 starts AFTER the 06:00 off has already
+  # run, and without this sweeper would leave the bedroom at 22°C until
+  # 22:30 — most of a day heating an empty room. UNgated, same style as the
+  # other offs, and it fires exactly once — anything you set by hand after
+  # 09:00 still wins.
+  - id: heating_bedroom_morning_catchall_off
+    alias: "Heating: Bedroom morning catch-all off (09:00)"
+    description: >-
+      Sweeps up after the alarm-driven pre-heat, whose warm-up can begin
+      after the fixed 06:00 off has already run. UNgated.
+    triggers:
+      - trigger: time
+        at: "09:00:00"
+    actions:
+      - action: climate.set_temperature
+        target:
+          entity_id: climate.bedroom_trv
+        data:
+          temperature: 5
+          hvac_mode: heat
+
   - id: heating_bedroom_evening
     alias: "Heating: Bedroom evening"
     description: >-
@@ -473,6 +504,27 @@ automation:
           temperature: 5
           hvac_mode: heat
 
+  # ── Boost guard reset on restart ──
+  # A restart kills any running script mid-delay, so a boost in flight never
+  # reaches its restore step — and the snapshot scene (scene.create is
+  # memory-only) dies with it. Clear the guard at startup so the next boost
+  # takes a fresh snapshot instead of finding the boolean stuck ON. Rooms
+  # left at the boost temperature are re-asserted by the schedule
+  # automations at their next windows — worst case, the ungated 22:00
+  # night setback.
+  - id: heating_boost_guard_reset_on_start
+    alias: "Heating: Boost guard reset (HA start)"
+    description: >-
+      A restart kills the running boost script; clear the guard so future
+      boosts work. Schedules re-assert setpoints at their next windows.
+    triggers:
+      - trigger: homeassistant
+        event: start
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.heating_boost_active
+
   # ── Alarm-driven pre-heat (optional — Android companion app only) ──
   # Both automations fire 20 minutes before the phone's next alarm, if — and
   # only if — a valid alarm is set. No alarm set = no dynamic pre-heat; the
@@ -486,9 +538,13 @@ automation:
   # they are harmless as-is: an absent sensor reads 'unknown' and the
   # trigger template then never fires.
   #
-  # Safe to overlap with the fixed-time pre-heats — both idempotently set the
-  # same target, so the worst case is setting the same temperature twice a
-  # few minutes apart.
+  # The ONs overlap safely with the fixed-time pre-heats — both idempotently
+  # set the same target, so the worst case is setting the same temperature
+  # twice a few minutes apart. The OFF side is the part that needs care: the
+  # fixed 06:00 bedroom off fires too early to catch a pre-heat for a LATER
+  # alarm, which is exactly why the 09:00 bedroom catch-all off exists above.
+  # (The office alarm pre-heat needs no sweeper — the end-of-day office off
+  # already covers it.)
   #
   # The template trigger fires within a 60-second window around
   # (alarm − 20 min); `mode: single` + `max_exceeded: silent` stop the

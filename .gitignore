@@ -1,19 +1,29 @@
 # Never commit real secrets — only the .example files belong in git
 secrets.yaml
 **/secrets.yaml
-.env
+.env*
 *.env
+*.token
+token.json
 
-# Home Assistant runtime artefacts (if you point HA at a clone of this repo)
+# Home Assistant runtime artefacts (if you point HA at a clone of this repo).
+# .storage/ looks like boring internal state but holds auth tokens and
+# integration credentials — committing it is committing your passwords.
 .storage/
 .cloud/
 deps/
 tts/
+
+# Databases and logs (the recorder .db is a year of your location history)
 *.db
 *.db-shm
 *.db-wal
 *.log
 *.log.*
+
+# Backups bundle your entire config — .storage and secrets included
+backup/
+backups/
 
 # OS noise
 .DS_Store

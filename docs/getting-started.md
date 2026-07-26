@@ -81,7 +81,16 @@ drives sunrise/sunset automations), and pick metric units.
 **First thing after onboarding**: Settings → System → Backups → create a full
 backup. Get in the habit now — see golden rule 4 below.
 
-## 3. Zigbee: dongle, MQTT broker, Zigbee2MQTT
+## 3. Install the Companion app on your phone
+
+Install the **Home Assistant Companion app** (iOS or Android) and sign in to
+your new instance. This isn't just for remote control: signing in is what
+creates the `notify.notify` service that every kit component's alerts are
+sent through. Without a signed-in phone, those `notify.notify` calls simply
+error. Two minutes now, and the alerts work from the very first component
+you install.
+
+## 4. Zigbee: dongle, MQTT broker, Zigbee2MQTT
 
 Zigbee is the backbone of this kit — cheap bulbs, plugs, radiator valves and
 sensors that talk a local mesh protocol with no cloud and no per-vendor app.
@@ -104,7 +113,7 @@ discipline, naming discipline, and the sleepy-device procedures — lives in
 [`components/01-zigbee-foundation`](../components/01-zigbee-foundation/README.md).
 Go there now, do it properly once, and the rest of the kit builds on it.
 
-## 4. Install HACS
+## 5. Install HACS
 
 [HACS](https://hacs.xyz/) is the community store for custom cards and
 integrations. Several kit components use frontend cards from it (card-mod,
@@ -115,7 +124,7 @@ so don't trust third-party tutorials): it's a one-line download into `/config`,
 a restart, then *Settings → Devices & Services → Add Integration → HACS* and a
 GitHub sign-in dance. GitHub account required (free).
 
-## 5. Wire in this kit
+## 6. Wire in this kit
 
 The kit is built on **packages** — each component is one self-contained YAML
 file you drop into a folder. To enable that:
@@ -124,13 +133,28 @@ file you drop into a folder. To enable that:
    (mount it as a network drive) or the **Studio Code Server** add-on (edit in
    the browser). Either is fine; Studio Code Server also gives you YAML syntax
    checking as you type.
-2. Copy this kit's `base/configuration.yaml` settings into your
+2. Merge this kit's `base/configuration.yaml` settings into your
    `/config/configuration.yaml`. The load-bearing line is:
 
    ```yaml
    homeassistant:
      packages: !include_dir_named packages
    ```
+
+   **Careful here**: a stock HAOS config *already* contains
+   `automation:`, `script:` and `scene:` include lines. Don't paste the
+   kit file in wholesale — you'd end up with duplicate keys (the config
+   check fails) or two competing automation blocks. Keep your existing
+   include lines exactly as they are and add **only** the
+   `homeassistant: packages:` block and the `frontend: themes:` line.
+   The kit file's `automation ui:` / `script ui:` keys are for fresh
+   configs built from the kit file alone.
+
+   If you *are* building a fresh config from the kit file alone, also
+   check that `automations.yaml`, `scripts.yaml` and `scenes.yaml` exist
+   in `/config` — HAOS onboarding normally creates them for you. If any
+   are missing, create each one containing just an empty list: a single
+   line reading `[]`.
 
 3. Create the folder: `/config/packages/`
 4. Copy `base/secrets.yaml.example` to `/config/secrets.yaml` and fill in the
@@ -143,7 +167,7 @@ file you drop into a folder. To enable that:
 
 From here on you rarely need a full restart — see golden rule 3.
 
-## 6. Install your first component
+## 7. Install your first component
 
 Pick an easy win:
 
@@ -166,7 +190,7 @@ The install ritual is the same for every component:
    *Traces* shows you exactly what fired and why — learn to read traces early,
    they are the debugger.
 
-## 7. The golden operational rules
+## 8. The golden operational rules
 
 Hard-won. Ignore them and the house will teach them to you the annoying way.
 

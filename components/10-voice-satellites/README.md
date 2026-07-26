@@ -2,7 +2,7 @@
 
 ## What it does
 
-Puts a small always-listening voice puck (M5Stack Atom Echo) in each room, wired into Home Assistant's Assist pipeline so "turn on the kitchen lights" just works — no phone, no cloud assistant account. On top of that it adds a household pool of **3 labelled timers** and **3 one-shot alarms**, all announced through a single `script.announce` (spoken alert on a proper speaker + phone notification), which is also the one place every future component in the kit sends its voice alerts.
+Puts a small always-listening voice puck (M5Stack Atom Echo) in each room, wired into Home Assistant's Assist pipeline so "turn on the kitchen lights" just works — no phone, no cloud assistant account. On top of that it adds a household pool of **3 labelled timers** and **3 one-shot alarms**, all announced through a single `script.announce` (spoken alert on a proper speaker + phone notification). That script is the *pattern* the kit's other components mirror — each has its own announce point targeting `media_player.announce_speaker` — so renaming that one placeholder consistently across components is what actually re-points the whole house at your speaker.
 
 ## Hardware needed
 
