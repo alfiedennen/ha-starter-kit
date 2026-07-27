@@ -1,0 +1,97 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Custom wake word — SNIPPET, not a full device config
+# ═══════════════════════════════════════════════════════════════════════════
+# This file shows exactly what to change in component 10's
+# voice-satellite.yaml to swap the stock okay_nabu model for a wake word
+# you trained yourself (see this component's README for the training path).
+# Everything else in voice-satellite.yaml — audio, voice_assistant, LED,
+# wifi, the on_boot wake-word start — stays exactly as it is.
+#
+# Prerequisites:
+#   1. Your trained model pair lives in the ESPHome add-on's config dir:
+#        /config/esphome/wakewords/hey_jeeves/hey_jeeves.tflite
+#        /config/esphome/wakewords/hey_jeeves/hey_jeeves.json
+#      (per-model folder so versions don't overwrite each other — when v2
+#      lands it goes in wakewords/hey_jeeves_v2/ and rollback is a
+#      one-line edit here).
+#   2. You have edited the .json manifest to the deploy-tuned values
+#      (see the manifest block at the bottom of this file). The as-trained
+#      values are a starting point, NOT the answer — README, first gotcha.
+#
+# Any model or manifest change is a firmware change: the .tflite is
+# compiled INTO the image, so every tuning iteration is a rebuild +
+# reflash. OTA is fine for this; keep a USB-C cable handy for the
+# occasional puck that refuses (see README gotchas).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── REPLACE the micro_wake_word block in voice-satellite.yaml with this ────
+micro_wake_word:
+  models:
+    # Path is relative to the ESPHome config directory (/config/esphome/),
+    # and points at the JSON MANIFEST, not the .tflite — the manifest names
+    # the model file and carries the detection parameters.
+    - model: wakewords/hey_jeeves/hey_jeeves.json
+    #
+    # ── Keeping okay_nabu as a second simultaneous model? ─────────────────
+    # micro_wake_word CAN listen for several models at once, and on a
+    # board with PSRAM (ESP32-S3 class) adding the line below is a nice
+    # safety net while the custom word earns trust:
+    #
+    #   - model: okay_nabu
+    #
+    # On the base Atom Echo, DON'T. It has 320 KB of SRAM and no PSRAM;
+    # two tensor arenas plus the voice pipeline's audio buffers generally
+    # exceed what's free, and the failure is unhelpful — allocation errors
+    # in the log, or a plain boot loop. The kit's trial strategy instead:
+    # flash ONE satellite with the custom model and leave the rest of the
+    # fleet on okay_nabu until the new word has survived a few days of
+    # television (README — "One puck first, then the fleet").
+  on_wake_word_detected:
+    - voice_assistant.start:
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The manifest (hey_jeeves.json) — what to tune and why
+# ═══════════════════════════════════════════════════════════════════════════
+# Not YAML — shown here because it is the real tuning surface and it ships
+# from training with values you should not deploy as-is. Edit the "micro"
+# section of the .json before first flash, then rebuild + reflash:
+#
+#   {
+#     "wake_word": "Hey Jeeves",
+#     "model": "hey_jeeves.tflite",
+#     ...
+#     "micro": {
+#
+#       "probability_cutoff": 0.85,
+#       // Confidence the model must reach before firing. Trained models
+#       // commonly ship with ~0.5 — tuned to the clean synthetic
+#       // validation set, and far too loose for a real room: at 0.5 the
+#       // television WILL wake it nightly. 0.85 is the proven strict
+#       // starting point on real far-field hardware; walk it down in
+#       // 0.05 steps only if the wake word needs repeating, up towards
+#       // 0.92-0.95 if it fires on things nobody said. The number you
+#       // converge on is specific to your rooms and voices.
+#
+#       "sliding_window_size": 5,
+#       // How many consecutive inference windows are averaged before the
+#       // cutoff is applied. Looks like a smoothing knob; is actually a
+#       // LATENCY knob. The voice pipeline has no audio lookback — capture
+#       // starts only when the wake word fires — so a slow fire clips the
+#       // start of the command and STT fails with stt-no-text-recognized
+#       // even though the LED lit. 5 fires fast enough to catch the
+#       // command. Do not raise it to fight false positives; that job
+#       // belongs to probability_cutoff and better confusables.
+#
+#       "tensor_arena_size": 50000
+#       // Scratch RAM (bytes) reserved for inference on the device. Too
+#       // small and the model fails to LOAD — "Failed to allocate
+#       // tensors" in the device log, wake word simply dead. Models have
+#       // shipped as-trained at 30000 and needed 50000 on real hardware.
+#       // If 50000 still errors, try 80000. Purely a runtime allocation:
+#       // changing it never requires retraining, just reflash.
+#     }
+#   }
+#
+# (// comments are illustrative — JSON does not allow comments; don't
+# paste them into the real file.)
+# ═══════════════════════════════════════════════════════════════════════════

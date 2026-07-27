@@ -1,0 +1,628 @@
+# ═════════════════════════════════════════════════════════════════════
+# PRESENCE FUSION — server-side "who is in which room" — HA package
+# ═════════════════════════════════════════════════════════════════════
+# Advanced extension of component 08 (ESP32 Presence Mesh). Everything
+# in this file CONSUMES signals that component 08's nodes produce —
+# nothing here works without that mesh running first.
+#
+# The mental model, in one line:
+#
+#   BLE identifies WHO · radar confirms BODIES · fusion decides the room
+#
+# Five blocks, in rough order of "install this first":
+#
+#   1. RADAR ZONE SENSORS   — per-room "anyone present" + a worked
+#                             "at desk" box + an "in doorway" strip.
+#                             Identity-blind, rock solid. Start here.
+#   2. REALLY-HOME SENSORS  — per-person home/away that keys off the
+#                             PHONE, so a wearable left on a desk can't
+#                             hold someone "home" all day.
+#   3. NEAREST-ROOM (argmax) — the simple per-person room sensor: raw
+#                             RSSI winner-takes-all. Start with this.
+#   4. COMMITTED ROOM       — the stateful per-person room sensor with
+#                             memory, transit suppression and cross-
+#                             floor cooldown. Graduate to this when the
+#                             argmax sensor's failure modes bite.
+#   5. WEIGHTED CENTROID    — OPTIONAL live (x, y) position for a
+#                             floor-plan map. Ships commented out.
+#
+# Two independent data paths feed these — you don't need both on day 1:
+#
+#   PATH A (identity): Private BLE Device integration (IRK-resolved
+#     phone/watch trackers) + Bermuda (room-level area). Feeds blocks
+#     2 and 4. Set up per component 08's README.
+#   PATH B (raw RSSI): the OPTIONAL per-beacon `ble_rssi` sensors in
+#     component 08's node configs (commented out there — uncomment
+#     them) + a fixed iBeacon broadcast from the phone. Feeds blocks
+#     3 and 5.
+#
+# Copy this file to /config/packages/ (the kit's base config loads
+# packages via `homeassistant: packages: !include_dir_named packages`),
+# rename the placeholder entities to your own (see README), then
+# restart Home Assistant. A plain template-reload is NOT enough the
+# first time — the input_text below only gets created on a full
+# config load.
+# ═════════════════════════════════════════════════════════════════════
+
+input_text:
+  # Manual override for the committed-room sensor. Empty = the template
+  # uses its normal fusion. Set to a room name (exactly as it appears in
+  # the template's room list, e.g. "Living Room") to pin the person to
+  # that room until you clear it — the escape hatch for the nights when
+  # a phone deep-sleeps on the sofa and the fusion insists the person is
+  # in the bedroom. Clear by setting it back to an empty string.
+  your_room_override:
+    name: Committed room override (you)
+    icon: mdi:map-marker-question
+    max: 32
+
+template:
+  # ═══════════════════════════════════════════════════════════════════
+  # 1. RADAR ZONE / OCCUPANCY SENSORS — identity-blind "bodies here"
+  # ═══════════════════════════════════════════════════════════════════
+  # These read component 08's radar nodes directly. They answer "is
+  # ANYONE in this room" — they don't know or care who. Keeping
+  # identity (BLE) and presence (radar) as separate layers is the
+  # single most important design decision in this component: radar is
+  # near-certain but anonymous, BLE is identified but woolly. Fuse
+  # them at the END (the committed-room sensor), never at the source.
+  #
+  # Every sensor gets a delay_off. Radar drops a perfectly still person
+  # for a few seconds now and then (typing pauses, reading); the hold
+  # keeps those micro-gaps from flickering lights off around someone
+  # mid-sentence. 2 minutes also covers "stepped out to make tea".
+  - binary_sensor:
+      - name: "Living Room Anyone Present"
+        unique_id: fusion_living_room_anyone_present
+        icon: mdi:account-multiple
+        delay_off: "00:02:00"
+        state: >-
+          {{ is_state('binary_sensor.presence_living_room_radar_presence', 'on') }}
+
+      # A room with TWO occupancy-grade sensors (e.g. an LD2450 radar
+      # plus a Zigbee mmWave from component 02) should OR them — either
+      # one firing means "someone is here", and each covers the other's
+      # blind spots:
+      #
+      #   {{ is_state('binary_sensor.presence_kitchen_radar_presence', 'on')
+      #      or is_state('binary_sensor.kitchen_presence', 'on') }}
+      - name: "Kitchen Anyone Present"
+        unique_id: fusion_kitchen_anyone_present
+        icon: mdi:account-multiple
+        delay_off: "00:02:00"
+        state: >-
+          {{ is_state('binary_sensor.presence_kitchen_radar_presence', 'on') }}
+
+      - name: "Study Anyone Present"
+        unique_id: fusion_study_anyone_present
+        icon: mdi:account-multiple
+        delay_off: "00:02:00"
+        state: >-
+          {{ is_state('binary_sensor.presence_study_radar_presence', 'on') }}
+
+      # Not every room needs a radar. Any occupancy-grade sensor slots
+      # into the same shape — here a Zigbee mmWave sensor, named per
+      # component 02's binary_sensor.<room>_presence convention, stands
+      # in until a radar arrives.
+      - name: "Bedroom Anyone Present"
+        unique_id: fusion_bedroom_anyone_present
+        icon: mdi:account-multiple
+        delay_off: "00:02:00"
+        state: >-
+          {{ is_state('binary_sensor.bedroom_presence', 'on') }}
+
+      # ── Worked example: a rectangular "at desk" zone ────────────────
+      # The radar publishes per-target coordinates in METRES from the
+      # module, signed: X is left/right across the antenna face, +Y
+      # points straight out of the face into the room (range roughly
+      # ±6 m). A zone is just a box test on those numbers. (Component
+      # 16's precompute pipeline converts these to millimetres via
+      # `pos_scale: 1000` — only that pipeline thinks in mm.)
+      #
+      # DO NOT GUESS THE BOX — derive it from a trace. Sit in the chair
+      # for a few minutes doing normal desk things, watch
+      # sensor.presence_study_target_1_x / _y in Developer Tools →
+      # States, and note the envelope the readings live in. Then pad
+      # each edge by ~0.1-0.2 m. The bounds below are one real desk's
+      # calibration — yours WILL differ (they depend entirely on where
+      # the module is mounted). If left/right feels mirrored compared
+      # to your floor plan, flip the module's `flip_x_axis` option in
+      # the component 08 node config rather than negating maths here.
+      #
+      # This checks target 1 only. The radar promotes the dominant
+      # (usually closest) target to slot 1, which is right most of the
+      # time for a one-desk room; if the room regularly holds two
+      # people, extend the test to targets 2 and 3 the same way.
+      - name: "Study At Desk"
+        unique_id: fusion_study_at_desk
+        icon: mdi:account-tie
+        delay_off: "00:01:00" # 1-min hold so typing gaps don't flicker
+        state: >-
+          {%- set p = is_state('binary_sensor.presence_study_radar_presence', 'on') -%}
+          {%- set x = states('sensor.presence_study_target_1_x') | float(default=0) -%}
+          {%- set y = states('sensor.presence_study_target_1_y') | float(default=0) -%}
+          {{ p and -2.2 <= x <= -0.9 and 1.4 <= y <= 2.2 }}
+
+      # ── Worked example: an "in doorway" strip ───────────────────────
+      # Same idea, one axis: if the doorway sits beyond a certain
+      # distance from the module, "target is past that line" = someone
+      # entering or leaving. Calibrate by walking out of the room
+      # slowly and watching Y climb until the target drops — the last
+      # few readings before it vanishes are your doorway band.
+      #
+      # Deliberately a SHORT delay_off: this sensor's whole value is
+      # being transitional ("someone is passing through the doorway
+      # right now") — a long hold would turn it into a bad copy of the
+      # presence sensor.
+      - name: "Study In Doorway"
+        unique_id: fusion_study_in_doorway
+        icon: mdi:door
+        delay_off: "00:00:05"
+        state: >-
+          {%- set p = is_state('binary_sensor.presence_study_radar_presence', 'on') -%}
+          {%- set y = states('sensor.presence_study_target_1_y') | float(default=0) -%}
+          {{ p and y >= 2.4 }}
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 2. PER-PERSON "REALLY HOME" — phone-primary home/away
+  # ═══════════════════════════════════════════════════════════════════
+  # The person entity (and any wearable tracker) can read a left-behind
+  # device as "home" — a watch on a desk holds its owner "present" all
+  # day. These sensors key off the PHONE, the one device people
+  # actually take with them:
+  #
+  #   phone home                          → on
+  #   phone not_home for >= 20 minutes    → off
+  #   anything in between / phone silent  → fall back to person entity
+  #
+  # The 20-minute threshold absorbs the phone's BLE briefly dropping
+  # (lift, garden, deep-sleep) without flapping to away; the person-
+  # entity fallback covers a genuinely silent tracker. The time_pattern
+  # trigger is load-bearing: the 20-minute test compares against
+  # last_changed, and NOTHING re-evaluates a template when a duration
+  # elapses — only when a watched entity changes. The 5-minute
+  # heartbeat forces re-evaluation so "gone 20 minutes" actually flips
+  # the sensor within ~5 minutes of becoming true.
+  - triggers:
+      - trigger: state
+        entity_id:
+          - device_tracker.your_phone_ble
+          - device_tracker.partner_phone_ble
+          - person.you
+          - person.partner
+      - trigger: time_pattern
+        minutes: "/5"
+    binary_sensor:
+      - name: "You Really Home"
+        unique_id: fusion_you_really_home
+        device_class: presence
+        state: >-
+          {%- set t = states.device_tracker.your_phone_ble -%}
+          {%- set ph = t.state if t else 'unknown' -%}
+          {%- set gone = ph in ['not_home', 'away']
+                and t and (now() - t.last_changed).total_seconds() >= 1200 -%}
+          {%- if ph == 'home' -%}on
+          {%- elif gone -%}off
+          {%- else -%}{{ 'on' if is_state('person.you', 'home') else 'off' }}{%- endif -%}
+      - name: "Partner Really Home"
+        unique_id: fusion_partner_really_home
+        device_class: presence
+        state: >-
+          {%- set t = states.device_tracker.partner_phone_ble -%}
+          {%- set ph = t.state if t else 'unknown' -%}
+          {%- set gone = ph in ['not_home', 'away']
+                and t and (now() - t.last_changed).total_seconds() >= 1200 -%}
+          {%- if ph == 'home' -%}on
+          {%- elif gone -%}off
+          {%- else -%}{{ 'on' if is_state('person.partner', 'home') else 'off' }}{%- endif -%}
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 3. NEAREST ROOM (argmax) — the simple per-person room sensor
+  # ═══════════════════════════════════════════════════════════════════
+  # Raw RSSI winner-takes-all: whichever scanner hears the phone
+  # loudest names the room. No Bermuda, no calibration, near-zero lag.
+  # START WITH THIS ONE — it is genuinely good, and its failure modes
+  # are the best possible tutorial in why the committed-room sensor
+  # below exists:
+  #
+  #   · BOUNDARY FLAPPING — stand between two rooms and the winner
+  #     flickers with every 1-2 dB of noise. The 5 dB switch margin
+  #     below kills most of it, at the cost of a little stickiness.
+  #   · TRANSIT ROOMS — walking through the hallway names "Hallway"
+  #     for two seconds, and every consumer downstream twitches.
+  #   · CROSS-FLOOR BLEED — BLE sails through ceilings; the room
+  #     directly above often hears you better than the room you're in.
+  #
+  # When those start to bother you, graduate to block 4.
+  #
+  # Needs PATH B: uncomment the per-beacon `ble_rssi` block in each
+  # component 08 node config and broadcast a fixed iBeacon from the
+  # phone (HA Companion app → Manage sensors → BLE Transmitter). The
+  # node-side filters matter here: the `timeout` filter slams a
+  # vanished beacon to -127, which is what makes "not seen" detectable
+  # below, and the `heartbeat` keeps values flowing.
+  - triggers:
+      - trigger: state
+        entity_id:
+          - sensor.presence_living_room_phone_rssi
+          - sensor.presence_kitchen_phone_rssi
+          - sensor.presence_bedroom_phone_rssi
+          - sensor.presence_hallway_phone_rssi
+          - sensor.presence_study_phone_rssi
+    sensor:
+      - name: "Your Nearest Room"
+        unique_id: fusion_your_nearest_room
+        icon: mdi:crosshairs-gps
+        state: >-
+          {% set rooms = {
+            'Living Room': 'sensor.presence_living_room_phone_rssi',
+            'Kitchen':     'sensor.presence_kitchen_phone_rssi',
+            'Bedroom':     'sensor.presence_bedroom_phone_rssi',
+            'Hallway':     'sensor.presence_hallway_phone_rssi',
+            'Study':       'sensor.presence_study_phone_rssi',
+          } %}
+          {% set margin = 5 %}
+          {% set ns = namespace(best_room='unknown', best_rssi=-999) %}
+          {% for room, entity in rooms.items() %}
+            {% set raw = states(entity) %}
+            {% if raw not in ['unknown', 'unavailable'] %}
+              {% set rssi = raw | float(-127) %}
+              {% if rssi > ns.best_rssi %}
+                {% set ns.best_rssi = rssi %}
+                {% set ns.best_room = room %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+          {% set current = this.state
+             if this is not none and this.state not in ['unknown', 'unavailable']
+             else none %}
+          {% if ns.best_rssi < -100 %}
+            {# Everything weak or slammed to -127 (beacon gone quiet —
+               wearables in particular transmit in bursts): HOLD the
+               last known room rather than going unknown. A phone in a
+               pocket did not teleport; it dozed. #}
+            {{ current if current else ns.best_room }}
+          {% elif current and current in rooms and current != ns.best_room %}
+            {# Hysteresis: only switch rooms if the new winner beats the
+               CURRENT room's own reading by the margin. Kills flapping
+               when someone is stationary and RSSI noise crosses 1-2 dB. #}
+            {% set current_raw = states(rooms[current]) %}
+            {% if current_raw not in ['unknown', 'unavailable'] %}
+              {% set current_rssi = current_raw | float(-127) %}
+              {{ ns.best_room if ns.best_rssi >= current_rssi + margin else current }}
+            {% else %}
+              {{ ns.best_room }}
+            {% endif %}
+          {% else %}
+            {{ ns.best_room }}
+          {% endif %}
+        attributes:
+          # Raw per-room readings, exposed for walk-testing: put this
+          # sensor's more-info dialog on a phone screen and walk the
+          # house — you can watch the argmax argument happen live.
+          living_room: "{{ states('sensor.presence_living_room_phone_rssi') }}"
+          kitchen: "{{ states('sensor.presence_kitchen_phone_rssi') }}"
+          bedroom: "{{ states('sensor.presence_bedroom_phone_rssi') }}"
+          hallway: "{{ states('sensor.presence_hallway_phone_rssi') }}"
+          study: "{{ states('sensor.presence_study_phone_rssi') }}"
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 4. COMMITTED ROOM — the stateful fusion sensor (the crown jewel)
+  # ═══════════════════════════════════════════════════════════════════
+  # A trigger-based template sensor that maintains MEMORY of its own
+  # last answer and applies judgement before changing it:
+  #
+  #   · last-good-room memory  — via `this.state` (readable because
+  #     this is a TRIGGER-based entity; a normal template sensor can't
+  #     do this reliably)
+  #   · transit suppression    — never commits to the hallway; walking
+  #     through a corridor is not "being somewhere"
+  #   · cross-floor cooldown   — an upstairs reading within 60 s of
+  #     being downstairs is almost always ceiling bleed; hold
+  #   · heartbeat              — the /15 s time_pattern re-evaluates
+  #     the timed rules even when no signal has changed
+  #   · manual override        — the input_text pin, checked first
+  #
+  # Candidate resolution uses TWO sources in confidence order:
+  #   A. Bermuda's area sensor (preferred — calibrated offsets +
+  #      smoothing; much smarter than "nearest scanner won")
+  #   B. The tracker's raw `source` attribute mapped scanner→room
+  #      (fallback for when Bermuda hasn't caught up — e.g. a fresh
+  #      IRK — or its area sensor reads unknown)
+  # and TWO devices, also in confidence order: watch first (worn =
+  # where the body is, and its weak transmitter bleeds less), phone
+  # second. A lower tier only wins when every higher tier is silent.
+  - triggers:
+      - trigger: state
+        entity_id:
+          - device_tracker.your_phone_ble
+          - device_tracker.your_watch_ble
+          - sensor.your_phone_ble_area
+          - sensor.your_watch_ble_area
+          - input_text.your_room_override
+      - trigger: time_pattern
+        seconds: "/15"
+    sensor:
+      - name: "Your Committed Room"
+        unique_id: fusion_your_committed_room
+        icon: mdi:map-marker-account
+        state: >-
+          {%- set override = states('input_text.your_room_override') -%}
+          {%- if override and override not in ['', 'unknown', 'unavailable'] -%}
+          {{ override }}
+          {%- else -%}
+          {#- Bermuda's area sensor state is the HA area's friendly name
+              ("Living Room"), so normalise to lowercase-underscore for
+              the lookup. The map's KEYS must match YOUR area names
+              after that normalisation; the VALUES are the display
+              names this sensor emits. Two physical areas can collapse
+              to one logical room by giving them the same value. -#}
+          {%- set area_map = {
+            'living_room': 'Living Room',
+            'kitchen': 'Kitchen',
+            'bedroom': 'Bedroom',
+            'hallway': 'Hallway',
+            'study': 'Study',
+          } -%}
+          {%- set watch_area = (states('sensor.your_watch_ble_area') or '') | lower | replace(' ', '_') -%}
+          {%- set phone_area = (states('sensor.your_phone_ble_area') or '') | lower | replace(' ', '_') -%}
+          {%- set watch_via_bermuda = area_map.get(watch_area) -%}
+          {%- set phone_via_bermuda = area_map.get(phone_area) -%}
+          {#- Fallback source: the Private BLE Device tracker's `source`
+              attribute is the Bluetooth MAC of the proxy that most
+              recently heard the device. Map each proxy's MAC to its
+              room (placeholder MACs — read each node's real MAC off
+              its ESPHome device page, see README). Cruder than
+              Bermuda (no offsets, no smoothing) but it works the
+              moment the mesh does. -#}
+          {%- set scanner_map = {
+            'AA:BB:CC:00:00:01': 'Living Room',
+            'AA:BB:CC:00:00:02': 'Kitchen',
+            'AA:BB:CC:00:00:03': 'Bedroom',
+            'AA:BB:CC:00:00:04': 'Hallway',
+            'AA:BB:CC:00:00:05': 'Study',
+          } -%}
+          {%- set phone_src = state_attr('device_tracker.your_phone_ble', 'source') -%}
+          {%- set watch_src = state_attr('device_tracker.your_watch_ble', 'source') -%}
+          {%- set watch_via_scanner = scanner_map.get(watch_src) -%}
+          {%- set phone_via_scanner = scanner_map.get(phone_src) -%}
+          {%- set candidate =
+              watch_via_bermuda
+              or phone_via_bermuda
+              or watch_via_scanner
+              or phone_via_scanner -%}
+          {#- PRESENCE GATE — the in-house BLE trackers only, OR'd:
+              either device currently heard in the house = present;
+              away only when BOTH report not_home. Deliberately does
+              NOT consult the companion-app GPS tracker: a suspended
+              phone app can hold a stale GPS "home" for hours, and one
+              stale "home" ANDed or OR'd in here overrides two
+              correctly-reporting BLE trackers. (That failure was found
+              the hard way. The GPS tracker stays on the person entity
+              for zoning — it just gets no vote in this room sensor.
+              For home/away AUTOMATIONS, use the slower, phone-primary
+              "Really Home" sensors in block 2 instead.) -#}
+          {%- set is_present = (
+              states('device_tracker.your_phone_ble') == 'home'
+              or states('device_tracker.your_watch_ble') == 'home'
+          ) -%}
+          {%- set previous = this.state if this is not none else 'unknown' -%}
+          {%- set rooms = ['Living Room', 'Kitchen', 'Bedroom', 'Hallway', 'Study'] -%}
+          {%- set downstairs = ['Living Room', 'Kitchen', 'Hallway'] -%}
+          {%- set non_transit = ['Living Room', 'Kitchen', 'Bedroom', 'Study'] -%}
+          {%- set seconds_in_state = (now() - this.last_changed).total_seconds() if this is not none else 999 -%}
+          {#- 0. OPTIONAL nighttime heuristic: home on a weeknight after
+                23:00 → Bedroom, regardless of the sensors. Exists
+                because sleeping phones deep-sleep and BLE positioning
+                goes unreliable exactly when nothing is moving.
+                (Weekends excluded — people do stay up watching films.)
+                Pure personal-taste — delete this branch if it isn't
+                true of your household. -#}
+          {%- if is_present and now().hour >= 23 and now().weekday() < 5 -%}
+          Bedroom
+          {#- 1. Neither tracker heard in the house → genuinely away. -#}
+          {%- elif not is_present -%}
+          away
+          {#- 2. Present but no usable reading from any tier (MAC mid-
+                rotation, Bermuda catching up, wearable dozing): HOLD
+                the previous good room. This is the memory that makes
+                the sensor calm. -#}
+          {%- elif candidate is none -%}
+            {%- if previous in rooms -%}{{ previous }}
+            {%- else -%}unknown
+            {%- endif -%}
+          {#- 3. TRANSIT SUPPRESSION: never commit to the hallway.
+                Nobody dwells there; committing pollutes every consumer
+                for the few seconds of walking through. Hold the
+                previous non-transit room instead — the destination
+                room commits on arrival anyway. -#}
+          {%- elif candidate == 'Hallway' -%}
+            {%- if previous in non_transit -%}{{ previous }}
+            {%- else -%}{{ previous if previous in rooms else 'unknown' }}
+            {%- endif -%}
+          {#- 4. CROSS-FLOOR COOLDOWN: BLE bleeds through ceilings, and
+                an upstairs winner seconds after a downstairs commit is
+                almost always the upstairs board catching a stray
+                advertisement. Require 60 s of stability before
+                believing a downstairs→Study transition. (List every
+                UPSTAIRS room that suffers bleed as its own branch like
+                this one; tune 60 s with a walk-test — it should be a
+                little longer than your stairs take.) -#}
+          {%- elif candidate == 'Study' -%}
+            {%- if previous in downstairs and seconds_in_state < 60 -%}{{ previous }}
+            {%- else -%}Study
+            {%- endif -%}
+          {#- 5. Otherwise: believe the candidate. -#}
+          {%- else -%}
+          {{ candidate }}
+          {%- endif -%}
+          {%- endif -%}
+
+  # ── Cloning the committed-room sensor for a second person ───────────
+  # Ship ONE fully-worked copy per person rather than trying to
+  # parametrise one template for two people — the per-person quirks
+  # (which device is trustworthy, which heuristics apply) always
+  # diverge, and two plain copies stay debuggable. To clone for the
+  # partner:
+  #
+  #   1. Copy the whole `- triggers:` block above (from `- triggers:`
+  #      through the end of the state template).
+  #   2. Swap the four person-specific entities throughout:
+  #        device_tracker.your_phone_ble  → device_tracker.partner_phone_ble
+  #        device_tracker.your_watch_ble  → device_tracker.partner_watch_ble
+  #        sensor.your_phone_ble_area     → sensor.partner_phone_ble_area
+  #        sensor.your_watch_ble_area     → sensor.partner_watch_ble_area
+  #   3. New identity: name "Partner Committed Room",
+  #      unique_id fusion_partner_committed_room.
+  #   4. Add a second override input_text (e.g. partner_room_override)
+  #      at the top of this file, and point the override trigger + the
+  #      override lookup in the template at it.
+  #   5. Revisit the person-specific heuristics rather than copying
+  #      them blind: the post-23:00 rule, the confidence order (a
+  #      person with no wearable just loses the watch tiers), and
+  #      which rooms need the cross-floor cooldown.
+  #
+  # The area_map / scanner_map / room lists are house facts, not person
+  # facts — they stay identical across copies.
+
+# ═════════════════════════════════════════════════════════════════════
+# 5. OPTIONAL — WEIGHTED-CENTROID POSITION (live floor-plan dot)
+# ═════════════════════════════════════════════════════════════════════
+# Converts each scanner's RSSI to a rough distance via the log-distance
+# path-loss model, then emits the 1/d²-weighted centroid of the scanner
+# positions: a live (x, y) you can project onto a floor-plan SVG.
+#
+# This is a TOY compared to the sensors above — indoor RSSI→distance is
+# noisy at the best of times — but a smoothly drifting dot on a floor
+# plan is a genuinely lovely thing, and the centroid maths degrades
+# gracefully: wrong boards get included, but 1/d² damps their weight
+# toward zero.
+#
+# Ships COMMENTED OUT because it cannot work until you fill in real
+# per-node coordinates in the `variables` block: measure each node's
+# (x, y) position in METRES from any fixed origin (a front corner of
+# the house works well), consistent across floors. The floor index is
+# NOT centroided — it snaps to the single strongest board, because a
+# centroid between floors would put the dot inside the ceiling.
+#
+# Deliberately NO hysteresis and NO hold-last-value here: this is the
+# live-map sensor, and smooth motion is prettier than committed
+# snapping. Room decisions belong to blocks 3 and 4.
+#
+# Tuning notes (learnt the hard way):
+#   · ref_power    = RSSI of your beacon at 1 m from a node — measure
+#                    it, don't guess (hold the phone 1 m away, read the
+#                    node's rssi sensor).
+#   · path_loss_n  = 2.5 is a decent indoor value (walls + bodies);
+#                    2.0 is free space, 3.0 a very cluttered house.
+#   · min_rssi     = -110, deliberately permissive. An earlier cut used
+#                    -95 and the overnight case (dozing device, every
+#                    board reading -95..-105) left the sensor stuck on
+#                    unknown. Weak boards are harmless to include —
+#                    1/d² buries them.
+#   · The 0.3 m distance floor stops a very-close board's weight
+#     exploding to infinity and pinning the dot to the board.
+#
+# To enable: fill in the board coordinates, then uncomment everything
+# below (strip the leading "# " from each line). The block is indented
+# to slot straight into the `template:` list above — do NOT add a
+# second `template:` key.
+#
+#   - triggers:
+#       - trigger: state
+#         entity_id:
+#           - sensor.presence_living_room_phone_rssi
+#           - sensor.presence_kitchen_phone_rssi
+#           - sensor.presence_bedroom_phone_rssi
+#           - sensor.presence_hallway_phone_rssi
+#           - sensor.presence_study_phone_rssi
+#     actions:
+#       - variables:
+#           # (x, y) in metres from your chosen origin; floor 0 = ground.
+#           boards:
+#             - { entity: 'sensor.presence_living_room_phone_rssi', x: 0.0, y: 7.0, floor: 0, room: 'Living Room' }
+#             - { entity: 'sensor.presence_kitchen_phone_rssi',     x: 4.5, y: -3.0, floor: 0, room: 'Kitchen' }
+#             - { entity: 'sensor.presence_hallway_phone_rssi',     x: 4.5, y: 3.5, floor: 0, room: 'Hallway' }
+#             - { entity: 'sensor.presence_bedroom_phone_rssi',     x: 1.5, y: 6.0, floor: 1, room: 'Bedroom' }
+#             - { entity: 'sensor.presence_study_phone_rssi',       x: 2.5, y: 2.5, floor: 1, room: 'Study' }
+#           ref_power: -59
+#           path_loss_n: 2.5
+#           min_rssi: -110
+#     sensor:
+#       - name: "Your Position"
+#         unique_id: fusion_your_position
+#         icon: mdi:crosshairs-gps
+#         # State is compact CSV — "x,y,floor" — so a floor-plan page can
+#         # parse one string; the attributes carry the parts separately.
+#         state: >-
+#           {% set ns = namespace(sw=0.0, swx=0.0, swy=0.0,
+#                                 best_rssi=-999, best_floor=0, best_room='unknown') %}
+#           {% for b in boards %}
+#             {% set raw = states(b.entity) %}
+#             {% if raw not in ['unknown', 'unavailable'] %}
+#               {% set rssi = raw | float(-127) %}
+#               {% if rssi > min_rssi %}
+#                 {# log-distance path loss: d = 10 ^ ((ref - rssi) / (10 n)) #}
+#                 {% set d = 10 ** ((ref_power - rssi) / (10 * path_loss_n)) %}
+#                 {% set d = [d, 0.3] | max %}
+#                 {% set w = 1.0 / (d * d) %}
+#                 {% set ns.sw = ns.sw + w %}
+#                 {% set ns.swx = ns.swx + w * b.x %}
+#                 {% set ns.swy = ns.swy + w * b.y %}
+#                 {% if rssi > ns.best_rssi %}
+#                   {% set ns.best_rssi = rssi %}
+#                   {% set ns.best_floor = b.floor %}
+#                   {% set ns.best_room = b.room %}
+#                 {% endif %}
+#               {% endif %}
+#             {% endif %}
+#           {% endfor %}
+#           {% if ns.sw > 0 %}
+#           {{ (ns.swx / ns.sw) | round(2) }},{{ (ns.swy / ns.sw) | round(2) }},{{ ns.best_floor }}
+#           {% else %}
+#           unknown
+#           {% endif %}
+#         attributes:
+#           x: >-
+#             {% set ns = namespace(sw=0.0, swx=0.0) %}
+#             {% for b in boards %}
+#               {% set raw = states(b.entity) %}
+#               {% if raw not in ['unknown', 'unavailable'] %}
+#                 {% set rssi = raw | float(-127) %}
+#                 {% if rssi > min_rssi %}
+#                   {% set d = [10 ** ((ref_power - rssi) / (10 * path_loss_n)), 0.3] | max %}
+#                   {% set w = 1.0 / (d * d) %}
+#                   {% set ns.sw = ns.sw + w %}
+#                   {% set ns.swx = ns.swx + w * b.x %}
+#                 {% endif %}
+#               {% endif %}
+#             {% endfor %}
+#             {{ (ns.swx / ns.sw) | round(3) if ns.sw > 0 else none }}
+#           y: >-
+#             {% set ns = namespace(sw=0.0, swy=0.0) %}
+#             {% for b in boards %}
+#               {% set raw = states(b.entity) %}
+#               {% if raw not in ['unknown', 'unavailable'] %}
+#                 {% set rssi = raw | float(-127) %}
+#                 {% if rssi > min_rssi %}
+#                   {% set d = [10 ** ((ref_power - rssi) / (10 * path_loss_n)), 0.3] | max %}
+#                   {% set w = 1.0 / (d * d) %}
+#                   {% set ns.sw = ns.sw + w %}
+#                   {% set ns.swy = ns.swy + w * b.y %}
+#                 {% endif %}
+#               {% endif %}
+#             {% endfor %}
+#             {{ (ns.swy / ns.sw) | round(3) if ns.sw > 0 else none }}
+#           strongest: >-
+#             {% set ns = namespace(best_rssi=-999, best_room='unknown') %}
+#             {% for b in boards %}
+#               {% set raw = states(b.entity) %}
+#               {% if raw not in ['unknown', 'unavailable'] %}
+#                 {% set rssi = raw | float(-127) %}
+#                 {% if rssi > ns.best_rssi %}
+#                   {% set ns.best_rssi = rssi %}
+#                   {% set ns.best_room = b.room %}
+#                 {% endif %}
+#               {% endif %}
+#             {% endfor %}
+#             {{ ns.best_room }}

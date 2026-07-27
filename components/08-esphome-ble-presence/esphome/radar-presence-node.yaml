@@ -119,31 +119,41 @@ LD2450:
     name: "Radar Presence"
   target_count:
     name: "Radar Target Count"
-  # Per-target coordinates: mm from the module, +Y straight out of the
-  # antenna face into the room. Feed these to template sensors / zone logic
-  # in HA ("is someone at the desk?", "on the sofa?").
+  # Per-target position/distance publish in METRES (the component converts the
+  # radar's raw millimetres, ×0.001 — its schema default), speed in cm/s.
+  # +Y points straight out of the antenna face into the room. Feed these to
+  # template sensors / zone logic in HA ("is someone at the desk?", "on the
+  # sofa?") — component 14's zone sensors and component 16's precompute consume
+  # exactly these units (16 scales metres back to mm via its pos_scale).
+  #
+  # The sub-sensor names below are the bare axis names ON PURPOSE: the
+  # component automatically prepends each target's name, so "X" under
+  # "Target 1" publishes as "Target 1 X" → sensor.<node>_target_1_x, which is
+  # what every downstream reference expects. Naming them "Target 1 X" yourself
+  # doubles the prefix ("Target 1 Target 1 X" →
+  # sensor.<node>_target_1_target_1_x) and silently breaks components 14/16.
   targets:
     - target:
         name: "Target 1"
         id: t1
-        x_position: { name: "Target 1 X" }
-        y_position: { name: "Target 1 Y" }
-        speed: { name: "Target 1 Speed" }
-        distance: { name: "Target 1 Distance" }
+        x_position: { name: "X" }
+        y_position: { name: "Y" }
+        speed: { name: "Speed" }
+        distance: { name: "Distance" }
     - target:
         name: "Target 2"
         id: t2
-        x_position: { name: "Target 2 X" }
-        y_position: { name: "Target 2 Y" }
-        speed: { name: "Target 2 Speed" }
-        distance: { name: "Target 2 Distance" }
+        x_position: { name: "X" }
+        y_position: { name: "Y" }
+        speed: { name: "Speed" }
+        distance: { name: "Distance" }
     - target:
         name: "Target 3"
         id: t3
-        x_position: { name: "Target 3 X" }
-        y_position: { name: "Target 3 Y" }
-        speed: { name: "Target 3 Speed" }
-        distance: { name: "Target 3 Distance" }
+        x_position: { name: "X" }
+        y_position: { name: "Y" }
+        speed: { name: "Speed" }
+        distance: { name: "Distance" }
 
 sensor:
   # Diagnostics — see ble-proxy-node.yaml for why these earn their keep.

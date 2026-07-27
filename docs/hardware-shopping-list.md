@@ -88,8 +88,9 @@ cooking its battery.
 
 | Item | Rough price | What it unlocks | Used by |
 |---|---|---|---|
-| ESP32 devkit boards | £5–8 each | Bluetooth-proxy presence mesh nodes; general tinkering | 08 |
-| HLK-LD2450 24GHz radar module | £10–15 | Multi-target position/speed radar for room presence | 08 |
+| ESP32 devkit boards | £5–8 each | Bluetooth-proxy presence mesh nodes; general tinkering | 08, 14 |
+| Seeed XIAO ESP32-S3 | ~£8 | **Required for the radar nodes** — it has a genuine 5V/VBUS output pin. Plain devkits' VIN is input-only and cannot power the LD2450 | 08, 14, 16 |
+| HLK-LD2450 24GHz radar module | £10–15 | Multi-target position/speed radar for room presence (pairs with the XIAO above) | 08, 14, 16 |
 | M5StickC Plus2 | £18–22 | A one-press physical action button with instant beep feedback (screen and battery included) | 09 |
 
 ESP32 boards are the gateway drug of this hobby: £6 of hardware, a YAML file,

@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>The Long Take</title>
+  <style>
+    /*
+     * The Long Take — 24 hours of radar-tracked movement in one room,
+     * rendered as a single continuous "time-tube".
+     *
+     * Scene X = TIME (oldest left, newest right).
+     * The tube's cross-section at each 30-second bin encodes what happened
+     * then: smooth and slim = empty room; swollen and lobed = somebody
+     * moving. Orbit it, scrub it, let it play.
+     *
+     * The room's floor plan is not drawn. The tube is the data, not the room.
+     */
+    html, body {
+      margin: 0; padding: 0; height: 100%; width: 100%;
+      background: #14110d;            /* warm off-black, NOT pure black */
+      color: #e8d8b8;
+      font-family: -apple-system, system-ui, sans-serif;
+      overflow: hidden;
+    }
+    #root { position: fixed; inset: 0; }
+    canvas { display: block; touch-action: none; }
+
+    /* Diagnostic strip — top-left corner. Pushed to top:80px so it sits
+       below Home Assistant's app-header bar (~56px) when this page is
+       iframed inside a dashboard view. Keep it there: the HA header must
+       stay clickable so people can navigate away. */
+    #status {
+      position: fixed; top: 80px; left: 14px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 11px; line-height: 1.6;
+      color: rgba(232, 216, 184, 0.85);
+      letter-spacing: 0.03em;
+      pointer-events: none;
+      max-width: 50vw;
+      padding: 8px 14px;
+      background: rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      border-radius: 10px;
+      z-index: 10;
+    }
+    #status .label { color: rgba(232, 216, 184, 0.5); }
+
+    /* Scrubber — bottom centre. Always visible, on a soft scrim so it
+       reads against any background. Dragging brings to full opacity. */
+    #scrub {
+      position: fixed; left: 50%; bottom: 24px;
+      transform: translateX(-50%);
+      width: min(72vw, 760px);
+      padding: 14px 22px 12px;
+      background: rgba(0, 0, 0, 0.55);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border-radius: 16px;
+      border: 1px solid rgba(232, 216, 184, 0.12);
+      opacity: 0.85; transition: opacity 0.3s;
+      pointer-events: auto;
+      z-index: 10;
+    }
+    #root:hover #scrub, #scrub:hover, #scrub.touched { opacity: 1; }
+    #scrub input[type=range] {
+      width: 100%; -webkit-appearance: none; appearance: none;
+      background: transparent; cursor: ew-resize; height: 28px;
+    }
+    /* WebKit (Chrome/Safari) */
+    #scrub input[type=range]::-webkit-slider-runnable-track {
+      height: 4px;
+      background: linear-gradient(to right,
+        rgba(232, 216, 184, 0.18),
+        rgba(232, 216, 184, 0.45) 50%,
+        rgba(232, 216, 184, 0.18));
+      border-radius: 2px;
+    }
+    #scrub input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 18px; height: 18px; border-radius: 50%;
+      background: #f0dfba; margin-top: -7px;
+      box-shadow: 0 0 12px rgba(240, 223, 186, 0.6);
+      cursor: ew-resize;
+    }
+    /* Firefox */
+    #scrub input[type=range]::-moz-range-track {
+      height: 4px; background: rgba(232, 216, 184, 0.35); border-radius: 2px;
+    }
+    #scrub input[type=range]::-moz-range-thumb {
+      width: 18px; height: 18px; border-radius: 50%;
+      background: #f0dfba; border: none;
+      box-shadow: 0 0 12px rgba(240, 223, 186, 0.6);
+      cursor: ew-resize;
+    }
+    #scrub-label {
+      text-align: center; font-size: 12px; margin-top: 8px;
+      font-family: ui-monospace, monospace;
+      color: rgba(232, 216, 184, 0.7);
+      letter-spacing: 0.05em;
+      user-select: none;
+    }
+
+    /* Audio toggle pill — top-right corner. Also at top:80px, below HA's
+       header, for the same reason as #status. */
+    #audio-toggle {
+      position: fixed; top: 80px; right: 14px;
+      font-family: ui-monospace, monospace;
+      font-size: 11px; letter-spacing: 0.08em;
+      color: rgba(232, 216, 184, 0.85);
+      background: rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      border: 1px solid rgba(232, 216, 184, 0.18);
+      border-radius: 14px;
+      padding: 7px 13px;
+      cursor: pointer;
+      user-select: none;
+      transition: color 0.2s, border-color 0.2s, background 0.2s;
+      pointer-events: auto;
+      z-index: 10;
+    }
+    #audio-toggle:hover {
+      color: rgba(255, 255, 255, 0.95);
+      border-color: rgba(232, 216, 184, 0.45);
+      background: rgba(20, 30, 40, 0.7);
+    }
+    #audio-toggle .dot {
+      display: inline-block;
+      width: 6px; height: 6px; border-radius: 50%;
+      background: #88cce0;
+      margin-right: 7px;
+      vertical-align: middle;
+      box-shadow: 0 0 8px rgba(136, 204, 224, 0.7);
+    }
+    #audio-toggle.muted .dot { background: #555; box-shadow: none; }
+    #audio-toggle.waiting .dot {
+      background: #d4a060;
+      animation: audioPulse 1.5s ease-in-out infinite;
+    }
+    @keyframes audioPulse {
+      0%, 100% { opacity: 0.5; box-shadow: 0 0 4px rgba(212, 160, 96, 0.4); }
+      50%      { opacity: 1.0; box-shadow: 0 0 14px rgba(212, 160, 96, 0.9); }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <div id="status">
+    <span class="label">room:</span> <span id="s-room">…</span>
+    &nbsp;<span class="label">events:</span> <span id="s-n">…</span>
+    &nbsp;<span class="label">window:</span> <span id="s-window">…</span>
+    <br>
+    <span class="label">drag</span> orbit
+    &nbsp;<span class="label">scroll</span> zoom
+    &nbsp;<span class="label">space / dbl-click</span> play/pause
+  </div>
+
+  <div id="audio-toggle" title="Toggle audio">
+    <span class="dot"></span>TAP TO ENABLE SOUND
+  </div>
+
+  <div id="scrub">
+    <input type="range" id="scrub-range" min="0" max="1000" value="1000">
+    <div id="scrub-label">now</div>
+  </div>
+
+  <!-- three.js from the jsDelivr CDN. If you want this page to work with no
+       internet access at all, download these two paths and rewrite the URLs
+       to /local/long-take/vendor/ — see "The CDN dependency" in the README. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module" src="./long-take.js?v=1"></script>
+</body>
+</html>

@@ -1,0 +1,98 @@
+# ══════════════════════════════════════════════════════════════════════
+# The Long Take — dashboard (one full-screen iframe view per radar room)
+# ══════════════════════════════════════════════════════════════════════
+#
+# REGISTRATION (configuration.yaml) — copy this file to
+# /config/dashboards/long-take.yaml, then add:
+#
+#   lovelace:
+#     mode: storage
+#     dashboards:
+#       long-take:                   # ← the URL slug. MUST contain a hyphen!
+#         mode: yaml
+#         title: The Long Take
+#         icon: mdi:chart-timeline-variant-shimmer
+#         show_in_sidebar: true
+#         filename: dashboards/long-take.yaml
+#
+# Already have a `lovelace:` block (e.g. from component 11)? Don't add a
+# second one — add only the `long-take:` entry under your existing
+# `dashboards:` key.
+#
+# ⚠ HARD RULE: every dashboard key (the URL slug) MUST contain a hyphen.
+# HA's lovelace validator rejects single-word keys ("Url path needs to
+# contain a hyphen (-)") — and when lovelace setup fails, HA boots into
+# RECOVERY MODE (empty sidebar, warning banner). `ha core check` does NOT
+# catch this: the per-key slug validation only runs during full setup.
+# After touching the dashboards block, restart fully and confirm
+# recovery_mode is false (Settings → System → Repairs, or GET /api/config).
+#
+# HACS frontend dependency: card-mod (for the full-bleed iframe styling
+# below). Without card-mod the views still work — the renderer just sits
+# inside a normal letterboxed card instead of filling the screen. Fine for
+# a first look; install card-mod when you want the gallery effect.
+#
+# Adding a room: add it to ROOMS in scripts/precompute_radar.py, re-run the
+# precompute, then copy one view block below and change title/path/icon and
+# the `r=` parameter. That's the whole procedure.
+# ══════════════════════════════════════════════════════════════════════
+
+title: The Long Take
+
+# ── YAML anchor — the panel-iframe styling is identical for every view, so
+# define it once and reference it with *panel_iframe_style below. Any style
+# tweak is then a one-place change.
+#
+# Note: deliberately NO z-index games here. HA's top header bar overlays
+# the top ~56px of the iframe so you can still reach the sidebar and other
+# dashboards — a full-screen art piece that traps the user is a bug, not a
+# feature. The page's own UI (status strip, audio toggle) sits at top:80px
+# precisely so it clears HA's chrome. If you "fix" the header overlap with
+# z-index, you orphan anyone who opens the view on a tablet.
+panel_iframe_style: &panel_iframe_style |
+  ha-card {
+    height: 100vh !important;
+    width: 100vw !important;
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+  }
+  iframe {
+    height: 100% !important;
+    width: 100% !important;
+    border: none !important;
+  }
+
+views:
+  # One view per radar room. `?r=` must match a room id from the ROOMS
+  # config in scripts/precompute_radar.py (underscores or hyphens both
+  # resolve — the precompute writes both filenames).
+  - title: Living Room
+    path: living-room
+    icon: mdi:sofa
+    type: panel
+    # Optional: if you installed component 13 (Warm Studio theme), pin the
+    # flat dark variant so the header chrome matches the void behind the
+    # tube regardless of the viewing device's light/dark profile:
+    # theme: warm_studio_dark
+    cards:
+      - type: iframe
+        url: /local/long-take/long-take.html?r=living_room
+        aspect_ratio: 0
+        card_mod: { style: *panel_iframe_style }
+
+  - title: Office
+    path: office
+    icon: mdi:desk
+    type: panel
+    cards:
+      - type: iframe
+        url: /local/long-take/long-take.html?r=office
+        aspect_ratio: 0
+        card_mod: { style: *panel_iframe_style }

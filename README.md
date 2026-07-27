@@ -61,6 +61,15 @@ walks the whole path from empty hardware to first component.
 | 12 | [Guardrails](components/12-guardrails/) | The safety rails to build **before** you need them: protect a critical plug from your own automations, get told the moment HA raises a Repair, daily low-battery digest | Nothing |
 | 13 | [Theme](components/13-theme/) | A warm editorial dark theme (off-black + amber, proper typography) that makes every dashboard in this kit look intentional | Nothing |
 
+**The advanced tier** — three components that build on 08 and 10. Do those
+first; come back here when the basics are boringly reliable.
+
+| # | Component | What you get | Builds on |
+|---|-----------|--------------|-----------|
+| 14 | [Presence fusion](components/14-presence-fusion/) | Server-side room-level presence: BLE identifies *who*, radar confirms *bodies*, a stateful fusion sensor decides the room — with transit suppression, cross-floor cooldown, and an honest "start with the simple version" path | 08 |
+| 15 | [Wake-word training](components/15-wake-word-training/) | Train a custom wake word in one Colab run and deploy it to your voice satellites — including the tuning methodology that separates a demo from a daily driver | 10 |
+| 16 | [The Long Take](components/16-long-take/) | The showpiece: a 24-hour space-time sculpture of movement in a room, rendered live in the browser from radar history. Yes, it's art. The install is still pragmatic | 08 |
+
 ## The philosophy (read this once)
 
 - **Schedules propose, humans dispose.** Every automation here leaves a way
@@ -84,8 +93,9 @@ walks the whole path from empty hardware to first component.
 
 ```
 base/         minimal configuration.yaml + secrets.yaml.example
-components/   13 self-contained components (README + package YAML each;
-              some add extra files — ESPHome configs, dashboard, theme)
+components/   16 self-contained components — 13 core + 3 advanced-tier
+              (README + package YAML each; some add extra files —
+              ESPHome configs, dashboard, theme)
 docs/         getting started, hardware list, conventions, git safety
 scripts/      check-secrets.py — pre-commit secret scanner
 ```

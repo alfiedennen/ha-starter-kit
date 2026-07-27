@@ -12,8 +12,10 @@ Scatters cheap ESP32 boards around the house, each running ESPHome as a
 **Bluetooth proxy** — effectively giving Home Assistant an antenna in every
 room, so it can tell *which room* a phone or watch is in, not just "home /
 away". The optional radar variant adds an **HLK-LD2450 24 GHz mmWave sensor**
-that tracks up to three people with X/Y coordinates and speed at 10 Hz —
-catching someone sitting perfectly still, which PIR sensors never will.
+that tracks up to three people with X/Y coordinates and speed at 10 Hz
+(positions publish in metres, speed in cm/s — the units components 14 and 16
+consume) — catching someone sitting perfectly still, which PIR sensors never
+will.
 
 Two node types, two files in `esphome/`:
 
@@ -139,6 +141,11 @@ happens **in the YAML before flashing**, not in HA afterwards:
 | resulting entities, e.g. `sensor.presence_hallway_wifi_signal`, `binary_sensor.presence_living_room_radar_presence`, `sensor.presence_living_room_target_1_x` | follow automatically from `name` |
 | `ibeacon_uuid: "XXXXXXXX-…"` (commented out) | your own beacon's UUID, only if you use the optional raw-RSSI sensors |
 
+If you're ever unsure what entity ids a node actually created, the ground
+truth is **Developer Tools → States** in HA (search `target_1_x`) — or
+component 16's `precompute_radar.py --list-sensors`, which lists every
+target entity the recorder knows about.
+
 ## secrets.yaml keys needed
 
 In **ESPHome's** `secrets.yaml` (next to the node configs — not Home
@@ -189,6 +196,15 @@ The production lessons. Every one of these cost real bench time.
   The TillFleisch external component (referenced straight from GitHub in the
   config) parses correctly. Older tutorials point at a screek-workshop fork
   that has since been deleted from GitHub.
+
+- **The LD2450 component prefixes target names — leave the sub-sensor names
+  bare.** In `radar-presence-node.yaml` the per-target sub-sensors are named
+  just `X` / `Y` / `Speed` / `Distance` on purpose: the component
+  automatically prepends the target's own name, so `X` under `Target 1`
+  publishes as "Target 1 X" → `sensor.<node>_target_1_x`. Rename them to
+  "Target 1 X" yourself and the prefix doubles
+  (`sensor.<node>_target_1_target_1_x`), quietly breaking components 14
+  and 16, which expect the single form.
 
 - **First-boot radar silence.** A cold-powered LD2450 can take 30–60 s to
   start emitting UART frames. If entities show `unavailable` right after
