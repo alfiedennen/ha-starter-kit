@@ -1,10 +1,10 @@
 # ha-starter-kit
 
-A pragmatic, component-based Home Assistant starter kit — extracted from a
-real house that has been running all of this in production. No cloud
-subscriptions required, no exotic hardware, nothing conceptual: every
-component here earns its place by making daily life quietly better, and every
-odd-looking number in the YAML is a lesson someone already paid for.
+A pragmatic, component-based Home Assistant starter kit — extracted from my
+house, where all of it runs in production. No cloud subscriptions required,
+no exotic hardware, nothing conceptual: every component here earns its place
+by making daily life quietly better, and every odd-looking number in the
+YAML is a lesson I already paid for.
 
 **Who it's for**: you have (or are about to set up) a Home Assistant install
 and want working, understandable building blocks instead of a thousand
@@ -96,8 +96,8 @@ first; come back here when the basics are boringly reliable.
   HA token is remote control of your house.
 - **The shipped numbers are examples.** Every time, threshold and default in
   this kit is an illustrative value chosen for the documentation — not a live
-  description of any particular household's schedule or security posture.
-  Tune them to your house.
+  description of my household's schedule or security posture. Tune them to
+  your house.
 
 ## Repo layout
 

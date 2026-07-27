@@ -257,9 +257,9 @@ automation:
   #   event and locks reliably. So to remote-lock: call lock.unlock
   #   (which works), and let the lock relock itself. Counter-intuitive
   #   but it's the only remote path this hardware offers. HONESTY NOTE:
-  #   the trick is reported as flaky on this hardware class — treat the
-  #   phone nudge as the real safety net and be prepared to walk to the
-  #   door.
+  #   the trick is flaky — it runs my own door nightly with the fallback
+  #   nudge there for a reason. Treat the phone nudge as the real safety
+  #   net and be prepared to walk to the door.
   #
   # No fight with section 4a: the relock happens AT curfew, and 4a only
   # unlocks BEFORE curfew, so the auto-unlock policy never reverses the

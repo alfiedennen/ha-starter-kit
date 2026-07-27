@@ -123,7 +123,7 @@ template:
       # for a few minutes doing normal desk things, watch
       # sensor.presence_study_target_1_x / _y in Developer Tools →
       # States, and note the envelope the readings live in. Then pad
-      # each edge by ~0.1-0.2 m. The bounds below are one real desk's
+      # each edge by ~0.1-0.2 m. The bounds below are my own desk's
       # calibration — yours WILL differ (they depend entirely on where
       # the module is mounted). If left/right feels mirrored compared
       # to your floor plan, flip the module's `flip_x_axis` option in

@@ -14,8 +14,8 @@ with four rooms. The house's current state, written as sentences.*
 ## What it is
 
 [**Broadsheet**](https://github.com/alfiedennen/broadsheet) — *"Home
-Assistant, rendered as a magazine."* An open-source (MIT) frontend, from the
-same house this kit was extracted from, shaped like a publication instead of
+Assistant, rendered as a magazine."* An open-source (MIT) frontend I built
+in the same house this kit came from, shaped like a publication instead of
 a control panel: italic display serif, proper body typography, **pages not
 screens, prose not specs**. The landing page isn't a grid of tiles — it's a
 composed manifest of the moment: who's home, what the house is doing, what
@@ -61,7 +61,7 @@ Room are on", "3 warm, 1 cool". Pages, not screens.*
 
 ## Honest caveats
 
-- **It's young and in an active early-testing soak.** The author runs it in
+- **It's young and in an active early-testing soak.** I run it in
   production alongside HA's own frontend, not instead of it — treat it the
   same way while it bakes. Read
   [EARLY-TESTERS.md](https://github.com/alfiedennen/broadsheet/blob/main/docs/EARLY-TESTERS.md)

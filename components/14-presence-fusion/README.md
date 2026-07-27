@@ -216,7 +216,7 @@ The production lessons — every one of these cost real debugging time.
   handles case, not renames.
 
 - **Radar zone boxes come from traces, not tape measures.** The at-desk box
-  ships with one real desk's numbers and they will be wrong for yours. Sit
+  ships with my desk's numbers and they will be wrong for yours. Sit
   in the chair, watch `target_1_x` / `target_1_y` in Developer Tools for a
   few minutes, note the envelope, pad it ~0.1–0.2 m. The coordinates are in
   **metres**, signed — X left/right of the radar, +Y straight out of the

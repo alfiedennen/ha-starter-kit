@@ -27,7 +27,7 @@ Home Assistant needs a small always-on computer. Two good options:
 - Honest limitation: no headroom. When you later want to run other services
   next to Home Assistant (a media server, a network tool), the Pi is full.
 
-### Option B — a used mini-PC running Proxmox (our recommendation)
+### Option B — a used mini-PC running Proxmox (my recommendation)
 
 **~£100–150 used** for an HP ProDesk/EliteDesk-class or Dell OptiPlex-class
 machine — look for an 8th-gen-or-newer Intel i5, 8–16GB RAM. Then install
