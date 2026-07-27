@@ -6,6 +6,11 @@
 > engine room and put **your own application** in front of the household.
 > It builds on everything, and it needs nothing but a working HA.
 
+![The Moment — broadsheet's front page: the house's state written as a manifest](../../docs/images/broadsheet-moment.png)
+
+*The Moment — broadsheet's front page on a fresh install against a demo HA
+with four rooms. The house's current state, written as sentences.*
+
 ## What it is
 
 [**Broadsheet**](https://github.com/alfiedennen/broadsheet) — *"Home
@@ -46,6 +51,13 @@ software feels designed rather than configured.
 - **A Lovelace escape hatch** — an embed block that renders any HA
   dashboard you can't reproduce (card-mod / Mushroom / HACS specials, e.g.
   component 11's wall dashboard) inside a Broadsheet page, chrome-free.
+
+| № 02 · Lights | № 03 · Heat |
+|---|---|
+| ![Broadsheet's Lights page — prose summaries per room, scene pills](../../docs/images/broadsheet-lights.png) | ![Broadsheet's Heat page — macros and per-room setpoints in prose](../../docs/images/broadsheet-heat.png) |
+
+*The same demo house this kit's other screenshots use — "Hallway and Living
+Room are on", "3 warm, 1 cool". Pages, not screens.*
 
 ## Honest caveats
 
