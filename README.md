@@ -11,6 +11,13 @@ and want working, understandable building blocks instead of a thousand
 browser tabs. Each component is self-contained — install one, live with it,
 come back for the next.
 
+![The Long Take — 24 hours of one room's movement as a growing translucent membrane](docs/images/longtake-loop.gif)
+
+*Where the kit ends up: [component 16](components/16-long-take/) renders a
+day of mmWave radar as a living sculpture —
+[see it running live](https://haroldathome.com/the-long-take). It starts with
+a £5 ESP32 and a light that turns itself on.*
+
 ## How the kit works
 
 Everything is built on Home Assistant **packages**: one YAML file per

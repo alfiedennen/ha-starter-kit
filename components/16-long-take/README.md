@@ -5,6 +5,16 @@
 > `radar-presence-node.yaml` — build at least one radar node first, or there
 > is nothing to draw.
 
+![The Long Take — an office's day as a translucent membrane](../../docs/images/longtake-site.png)
+
+**[See it running live →](https://haroldathome.com/the-long-take)** — the
+author's public install, four rooms of real radar data in the same renderer
+this component ships. The kitchen is the busy one; the small blips through
+the day are the dogs going in and out of the garden. The radar is correct
+to count them.
+
+![Kitchen — the eruption of lobes is two bodies passing](../../docs/images/longtake-kitchen.png)
+
 ## What it does
 
 Let's be honest about this one: it is art. A 24-hour space-time sculpture of

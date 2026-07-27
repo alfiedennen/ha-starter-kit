@@ -1,5 +1,12 @@
 # 11 — Wall Tablet: kiosk dashboard + battery care
 
+| Out of the box | With component 13's theme |
+|---|---|
+| ![Wall dashboard, stock theme](../../docs/images/wall-tablet-default.png) | ![Wall dashboard, Warm Studio theme](../../docs/images/wall-tablet-studio.png) |
+
+*The shipped three-view dashboard on a fresh install (demo entities) — kiosk
+mode active, so no Home Assistant chrome. Portrait 800×1280.*
+
 ## What it does
 
 Turns a cheap Android tablet into a wall-mounted control panel: a portrait, finger-sized, three-view dashboard (Home / Heat / Lights) built on Mushroom cards with a reusable card-mod "anchor" sizing system, plus a battery-care package that charge-cycles the tablet between 40% and 80% via a smart plug and dims the screen overnight. The battery care is not optional polish — a tablet held at 100% charge 24/7 cooks its lithium cell, and swollen batteries inside wall mounts are a genuine hazard.

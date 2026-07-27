@@ -1,5 +1,7 @@
 # 13 — Warm Studio theme
 
+![Warm Studio applied to a stock Home Assistant overview](../../docs/images/theme-overview.png)
+
 ## What it does
 
 A warm, editorial dark theme for the whole Home Assistant frontend: warm off-black surfaces, parchment text, an amber accent, hairline card borders instead of shadows, and a four-font typography system (Newsreader for body text, Instrument Serif for headlines, IBM Plex Sans for labels and buttons, JetBrains Mono for code). It replaces HA's stock material look on every dashboard, dialog and sidebar — and can optionally become the system-wide default so users and devices that never picked a theme get it automatically.
